@@ -167,18 +167,20 @@ export function buildBody(params: BodyParams = LONG_TAILED_TIT, cell = 0.055): B
       const d = Math.hypot(gx - GAPE_D[0] * gt, gy - GAPE_D[1] * gt, gz - GAPE_D[2] * gt);
       furLen *= 1 - 0.35 * (1 - smoothstep(0.015, 0.045, d));
     }
-    // 收拢的翼面贴在两胁：翼面底下（连羽片的投影范围）的体表绒毛压到极短，壳层毛绝不会从黑羽里钻出来。
-    // 下缘顺着次级飞羽垂到的位置走，到尾基附近抬回去（那里只有搭在尾基上的初级飞羽）；
-    // 上缘留出过渡，让肩背的玫瑰粉棕绒羽自然垂搭在翼面上缘；前缘留出过渡，让胸侧白绒包住翅的前弯
-    const yTop = z >= -1.1 ? 3.3 + 0.2 * z : 3.08 + 0.12 * (z + 1.1);
-    const yBot = z >= -1.9 ? 1.92 + 0.13 * z : 1.69 + 0.9 * (-1.9 - z);
+    // 收拢的翅贴在两胁：翅底下的体表绒毛只压成柔和的短绒（约 0.14），不剃秃——收拢翅的包络面就放在这层短绒
+    // 外侧一点点，抬翅时露出来的是自然的粉白胁下绒毛，不会出现一块灰疤。
+    // 上缘留出过渡，让肩背的玫瑰粉棕绒羽自然垂搭在中覆羽根部上；前缘斜着切（上面从 z≈0 起、下面收到 z≈-0.7），
+    // 让胸侧和两胁前下方的饱满白绒向后上方蓬起，盖住翅的前弯和下前缘
+    const yTop = z >= -1.5 ? 3.2 + 0.1 * z : 3.05 + 0.08 * (z + 1.5);
+    const yBot = z >= -2.6 ? 2.17 + 0.1 * z : 1.91 + 0.27 * (-2.6 - z);
+    const zFront = -0.7 * (3.1 - y);
     const panel =
       smoothstep(0.35, 0.6, Math.abs(nx)) *
       smoothstep(yBot - 0.1, yBot + 0.08, y) *
       (1 - smoothstep(yTop - 0.08, yTop + 0.14, y)) *
-      (1 - smoothstep(0.1, 0.45, z)) *
-      smoothstep(-3.7, -3.4, z);
-    furLen = furLen * (1 - panel) + 0.05 * panel;
+      (1 - smoothstep(zFront - 0.15, zFront + 0.25, z)) *
+      smoothstep(-3.6, -3.2, z);
+    furLen = furLen * (1 - panel) + 0.14 * panel;
     // 腹底靠近腿的位置也短一些
     furLen *= 0.7 + 0.3 * smoothstep(0.35, 0.7, y);
 

@@ -37,6 +37,12 @@ export interface FeatherSpec {
   color: FeatherColorFn;
   /** 羽缘柔度：0 为清晰的羽片，1 为边缘过渡变宽、磨损缺口变浅（肩羽用，让它像从绒毛里长出来）。 */
   edgeSoft?: number;
+  /**
+   * 顺向叠瓦的羽片被前一片压住的位置（沿羽轴 0..1，收拢翅的覆羽/次级飞羽用）：
+   * 叠压 AO 从这里往羽尖过渡，露在外面的那一截才有“从叠缝里暗、到羽尖亮”的层次。
+   * 0（默认）= 按羽根到羽尖过渡（尾羽这类侧缘相压的羽片）。
+   */
+  expose?: number;
   /** 扇开信息（尾羽用）：[左右侧 ±1, 第几对 0..1]。配合材质的 uSpread 绕羽根竖直轴转动。 */
   fan?: [number, number];
 }
@@ -64,6 +70,7 @@ export class FeatherBatch {
   private readonly soft: number[] = [];
   private readonly fan: number[] = [];
   private readonly axis: number[] = [];
+  private readonly exp: number[] = [];
   private readonly idx: number[] = [];
   private base = 0;
   count = 0;
@@ -128,6 +135,7 @@ export class FeatherBatch {
       this.soft.push(spec.edgeSoft ?? 0);
       this.fan.push(spec.fan?.[0] ?? 0, spec.fan?.[1] ?? 0);
       this.axis.push(axisW.x, axisW.y, axisW.z);
+      this.exp.push(spec.expose ?? 0);
     }
     for (const i of index) this.idx.push(this.base + i);
     this.base += verts;
@@ -146,6 +154,7 @@ export class FeatherBatch {
     g.setAttribute('aSoft', new BufferAttribute(new Float32Array(this.soft), 1));
     g.setAttribute('aFan', new BufferAttribute(new Float32Array(this.fan), 2));
     g.setAttribute('aAxis', new BufferAttribute(new Float32Array(this.axis), 3));
+    g.setAttribute('aExp', new BufferAttribute(new Float32Array(this.exp), 1));
     g.setIndex(this.idx);
     g.computeBoundingSphere();
     return g;
@@ -177,6 +186,8 @@ attribute vec2 aSize;
 attribute float aSoft;
 attribute vec2 aFan;
 attribute vec3 aAxis;
+// 顺向叠瓦的羽片：被前一片压住的位置（沿羽轴 0..1），0 表示不启用
+attribute float aExp;
 // 尾羽扇开角（弧度）：每片羽绕羽根所在的竖直轴转动，外侧的羽转得更多
 uniform float uSpread;
 varying vec2 vFrag;
@@ -185,6 +196,7 @@ varying vec2 vPhy;
 varying vec2 vSize;
 varying float vSoft;
 varying vec3 vAxisW;
+varying float vExp;
 `;
 
 const FEATHER_VERTEX_MAIN = /* glsl */ `
@@ -193,6 +205,7 @@ const FEATHER_VERTEX_MAIN = /* glsl */ `
 	vPhy = aPhy;
 	vSize = aSize;
 	vSoft = aSoft;
+	vExp = aExp;
 	// 几何原点就是羽根（尾基），直接绕局部 Y 轴转
 	float fan = -uSpread * aFan.x * ( 0.2 + 0.8 * aFan.y );
 	float fc = cos( fan );
@@ -210,6 +223,7 @@ varying vec2 vPhy;
 varying vec2 vSize;
 varying float vSoft;
 varying vec3 vAxisW;
+varying float vExp;
 `;
 
 const FEATHER_SURFACE = /* glsl */ `
@@ -241,8 +255,12 @@ const FEATHER_SURFACE = /* glsl */ `
 	Surf s;
 	s.alpha = alpha;
 	s.albedo = alb;
-	// 羽根被上一片羽毛压住：环境光遮蔽向羽尖过渡，叠压才有层次
-	s.ao = mix( 0.55, 1.0, smoothstep( 0.0, 0.55, along ) );
+	// 羽根被上一片羽毛压住：环境光遮蔽向羽尖过渡，叠压才有层次。
+	// 顺向叠瓦的羽片（aExp > 0）露在外面的只有羽尖那一截，暗影要从叠缝处（aExp）才开始往羽尖过渡，
+	// 不然露出来的整截都是亮的，一片片叠压读不出来
+	float aoRoot = smoothstep( 0.0, 0.55, along );
+	float aoShingle = smoothstep( vExp - 0.06, vExp + 0.22, along );
+	s.ao = mix( mix( 0.55, 1.0, aoRoot ), mix( 0.62, 1.0, aoShingle ), step( 0.01, vExp ) );
 	s.wrap = 0.35;
 	float dark = 1.0 - smoothstep( 0.05, 0.25, lum );
 	s.specTint = mix( vec3( 1.0 ), vec3( 0.8, 0.85, 1.0 ), dark );

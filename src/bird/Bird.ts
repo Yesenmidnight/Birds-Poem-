@@ -117,8 +117,8 @@ export class Bird {
       const mesh = new Mesh(wing.geometry, wingMat);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
-      // 翼面底板：垫在正羽底下，羽片之间的缝不透出体表
-      const panel = new Mesh(buildWingPanel(params, s), panelMat);
+      // 翼内遮光底壳：藏在正羽轮廓以内，羽片根部之间的缝不透体表
+      const panel = new Mesh(buildWingPanel(params, s, wing.placements), panelMat);
       panel.receiveShadow = true;
       const pivot = this.wingPivots[side];
       pivot.position.set(s * WING_PIVOT.x, WING_PIVOT.y, WING_PIVOT.z);
