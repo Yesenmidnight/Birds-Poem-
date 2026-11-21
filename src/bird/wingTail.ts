@@ -22,10 +22,10 @@ const WHITE = rgb('#f0e9dc');
 const mix = (a: Color, b: Color, t: number): Color => a.clone().lerp(b, clamp(t, 0, 1));
 
 /**
- * 大覆羽：黑，羽尖一截奶油白。羽片顺翅长叠瓦，露在外面的正好是最后那一截——
- * 白梢从被前一片压住的位置之后才开始，连起来就是一道连续的细翼斑
+ * 大覆羽：黑，羽尖一截奶油白。8 片宽而柔边的羽片顺翅长叠瓦，露在外面的正好是最后那一截；
+ * 黑白过渡拉得柔、白度压到八成，连起来是一道柔和的浅色翼斑，不是一排颗粒分明的白点
  */
-const covert: FeatherColorFn = (_a, along) => mix(BLACK, WHITE, smooth(0.77, 0.82, along));
+const covert: FeatherColorFn = (_a, along) => mix(BLACK, WHITE, smooth(0.3, 0.66, along) * 0.8);
 /** 中覆羽、初级覆羽：纯黑——侧面只读出大覆羽那一道翼斑。 */
 const covertSmall: FeatherColorFn = () => BLACK;
 /** 次级飞羽：黑，下缘一条奶油白细羽缘。 */
@@ -101,10 +101,10 @@ const WING_ROWS: RowSpec[] = [
   {
     // 初级飞羽：从腕部出发搭在次级飞羽上，9 片侧缘相压，收束成搭在尾基上方的尖长翅尖
     count: 9,
-    rootA: [2.3, -0.5, 0.08],
-    rootB: [2.55, -0.36, 0.092],
-    tipA: [2.4, -2.5],
-    tipB: [2.58, -3.35],
+    rootA: [2.45, -0.5, 0.06],
+    rootB: [2.6, -0.36, 0.066],
+    tipA: [2.45, -2.5],
+    tipB: [2.6, -3.35],
     dirA: [0, -0.1, -1],
     dirB: [0, -0.05, -1],
     nrmA: [0.9, 0.42, 0.08],
@@ -112,7 +112,7 @@ const WING_ROWS: RowSpec[] = [
     lenA: 2.2,
     lenB: 2.6,
     width: 0.48,
-    asym: 0.3,
+    asym: 0.4,
     bare: 0.12,
     tipPos: 0.45,
     tipPow: 1.4,
@@ -125,8 +125,8 @@ const WING_ROWS: RowSpec[] = [
   {
     // 次级飞羽：从翅根朝后下方顺向叠瓦，连成一整片深色翼面，下缘一条奶油白细羽缘
     count: 17,
-    rootA: [2.72, -0.3, 0.075],
-    rootB: [2.6, -1.7, 0.075],
+    rootA: [2.72, -0.3, 0.065],
+    rootB: [2.6, -1.7, 0.065],
     dirA: [0.03, -0.37, -0.93],
     dirB: [0.03, -0.37, -0.93],
     nrmA: [0.94, 0.33, 0.05],
@@ -148,14 +148,14 @@ const WING_ROWS: RowSpec[] = [
   {
     // 三级飞羽：3 片上下错开、侧缘相压，盖在次级飞羽的中后段上，两缘的奶油白羽缘连成 2~3 道细白线
     count: 3,
-    rootA: [2.85, -0.85, 0.1],
-    rootB: [2.6, -1.2, 0.096],
+    rootA: [2.8, -0.85, 0.07],
+    rootB: [2.6, -1.2, 0.069],
     dirA: [0.03, -0.26, -0.966],
     dirB: [0.03, -0.28, -0.96],
     nrmA: [0.94, 0.33, 0.05],
     nrmB: [0.94, 0.33, 0.05],
-    lenA: 1.3,
-    lenB: 1.25,
+    lenA: 1.15,
+    lenB: 1.1,
     width: 0.5,
     asym: 0.42,
     bare: 0.08,
@@ -170,14 +170,14 @@ const WING_ROWS: RowSpec[] = [
   {
     // 初级覆羽：盖住腕部初级飞羽的根部
     count: 5,
-    rootA: [2.62, -0.42, 0.112],
-    rootB: [2.46, -0.52, 0.112],
+    rootA: [2.62, -0.42, 0.07],
+    rootB: [2.46, -0.52, 0.07],
     dirA: [0.02, -0.21, -0.978],
     dirB: [0.02, -0.21, -0.978],
     nrmA: [0.94, 0.33, 0.05],
     nrmB: [0.94, 0.33, 0.05],
-    lenA: 0.6,
-    lenB: 0.56,
+    lenA: 0.5,
+    lenB: 0.46,
     width: 0.24,
     asym: 0.45,
     bare: 0.04,
@@ -191,33 +191,34 @@ const WING_ROWS: RowSpec[] = [
     expose: 0.75,
   },
   {
-    // 大覆羽：18 片顺翅长叠瓦，白梢连成一道柔和倾斜的细翼斑
-    count: 18,
-    rootA: [2.98, -0.04, 0.105],
-    rootB: [2.82, -1.3, 0.105],
+    // 大覆羽：9 片宽而柔边的羽片顺翅长叠瓦，白梢融成一道柔和倾斜的浅色翼斑
+    count: 9,
+    rootA: [2.98, -0.14, 0.08],
+    rootB: [2.82, -1.32, 0.08],
     dirA: [0.03, -0.22, -0.975],
     dirB: [0.03, -0.24, -0.97],
     nrmA: [0.94, 0.33, 0.05],
     nrmB: [0.94, 0.33, 0.05],
-    lenA: 0.42,
-    lenB: 0.4,
-    width: 0.15,
+    lenA: 0.46,
+    lenB: 0.42,
+    width: 0.3,
     asym: 0.45,
     bare: 0.03,
-    tipPos: 0.74,
+    tipPos: 0.6,
     tipPow: 0.3,
     cup: 0,
     bow: 0,
     twist: 0,
     color: covert,
-    stack: 0.0012,
-    expose: 0.82,
+    stack: 0.0015,
+    expose: 0.66,
+    edgeSoft: 1,
   },
   {
     // 中覆羽：最外层的黑色窄带，根部被肩背的玫瑰粉棕绒毛搭住
     count: 12,
-    rootA: [3.1, 0.0, 0.11],
-    rootB: [2.98, -1.1, 0.11],
+    rootA: [3.1, -0.1, 0.08],
+    rootB: [2.98, -1.15, 0.08],
     dirA: [0.03, -0.19, -0.98],
     dirB: [0.03, -0.21, -0.977],
     nrmA: [0.93, 0.36, 0.05],
@@ -233,7 +234,7 @@ const WING_ROWS: RowSpec[] = [
     bow: 0,
     twist: 0,
     color: covertSmall,
-    stack: 0.0012,
+    stack: 0.0015,
     expose: 0.78,
   },
 ];
@@ -476,7 +477,7 @@ export function buildWingPanel(p: BodyParams, side: 1 | -1, placements: Placemen
     for (let j = 0; j < ny; j++) {
       if (!keep(i, j)) continue;
       const y = PANEL_Y0 + j * PANEL_CELL;
-      const x = surfaceHalfWidth(p, y, z) + 0.04;
+      const x = surfaceHalfWidth(p, y, z) + 0.03;
       vid[at(i, j)] = pos.length / 3;
       pos.push(side * x, y, z);
       bodyGradient(side * x, y, z, p, g);
@@ -541,13 +542,15 @@ varying float vFade;
   });
 }
 
-/** 尾羽对数。 */
-export const TAIL_PAIRS = 6;
-
 /**
  * 长尾：6 对，逐级变短，微微展开。几何在鸟局部坐标里减去尾基，每片羽毛带 aFan 属性
  * （左右侧、第几对），扇开时在顶点着色器里绕尾基的竖直轴转动（见 feathers.ts 的 uSpread）。
+ * 羽根沿羽轴往臀部里深插 TAIL_ROOT_INSET，羽尖位置不变：从背面看尾基的分叉处全埋在臀部和
+ * 尾上覆羽的绒毛里，不会露出一排黑三角；枢轴仍在自然的尾基关节上。
  */
+export const TAIL_PAIRS = 6;
+const TAIL_ROOT_INSET = 0.32;
+
 export function buildTail(p: BodyParams): FeatherSet {
   const batch = new FeatherBatch();
   const base = new Vector3(...p.tailBase);
@@ -556,12 +559,12 @@ export function buildTail(p: BodyParams): FeatherSet {
     const d = dir0.clone().applyAxisAngle(UP, -k * 0.085);
     d.y -= 0.012 * k;
     d.normalize();
-    const rootT = base.clone().add(new Vector3(0.05 + 0.075 * k, -0.025 * k, 0.02 * k));
+    const rootT = base.clone().add(new Vector3(0.05 + 0.075 * k, -0.025 * k, 0.02 * k)).addScaledVector(d, -TAIL_ROOT_INSET);
     const nrmT = new Vector3(Math.sin(k * 0.1), Math.cos(k * 0.1), 0.06);
     const m = featherMatrix(rootT, d, nrmT);
     const fan = k / (TAIL_PAIRS - 1);
     const spec: FeatherSpec = {
-      length: 7.6 * (1 - 0.085 * k),
+      length: 7.6 * (1 - 0.085 * k) + TAIL_ROOT_INSET,
       width: 0.78 * (1 - 0.05 * k),
       asym: 0.46,
       bare: 0.1,
