@@ -1,4 +1,16 @@
-import { ACESFilmicToneMapping, PCFShadowMap, PerspectiveCamera, SRGBColorSpace, Scene, WebGLRenderer } from 'three';
+import {
+  ACESFilmicToneMapping,
+  PCFShadowMap,
+  PerspectiveCamera,
+  Plane,
+  Quaternion,
+  Raycaster,
+  SRGBColorSpace,
+  Scene,
+  Vector2,
+  Vector3,
+  WebGLRenderer,
+} from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { Lighting } from './Lighting';
 import { Panel } from '../ui/Panel';
@@ -8,6 +20,8 @@ import { Sky } from '../world/Sky';
 import { Snowfall } from '../world/Snowfall';
 import { Bird, type BirdPart, type BlinkPose, type TailPose, type WingPose } from '../bird/Bird';
 import { FUR_DEFAULTS } from '../bird/fur';
+import { MotionController, type MotionCue } from '../bird/motion/MotionController';
+import { restPose } from '../bird/motion/Pose';
 import type { Perch } from '../bird/parts';
 
 export interface ViewPreset {
@@ -51,12 +65,23 @@ export class App {
   readonly snowfall: Snowfall;
   readonly branches: Branches;
   readonly bird: Bird;
+  readonly motion = new MotionController();
 
   private elapsed = 0;
   private last = 0;
   private fpsWindow = 0;
   private fpsCount = 0;
   private stats: { set(text: string): void }[] = [];
+  // 鼠标注视：指针 NDC → 过头部、正对相机的平面上的点
+  private readonly pointerNdc = new Vector2();
+  private pointerInside = false;
+  private readonly pointerRay = new Raycaster();
+  private readonly gazePlane = new Plane();
+  private readonly gazePoint = new Vector3();
+  private readonly headWorld = new Vector3();
+  private readonly birdQuat = new Quaternion();
+  private readonly birdInvQuat = new Quaternion();
+  private readonly camDir = new Vector3();
 
   constructor(root: HTMLElement, opts: AppOptions) {
     this.renderer = new WebGLRenderer({
@@ -97,6 +122,14 @@ export class App {
     this.panel = opts.ui ? new Panel(root) : null;
     if (this.panel) this.buildPanel();
 
+    const canvas = this.renderer.domElement;
+    canvas.addEventListener('pointermove', (e) => {
+      const r = canvas.getBoundingClientRect();
+      this.pointerNdc.set(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1);
+      this.pointerInside = true;
+    });
+    canvas.addEventListener('pointerleave', () => (this.pointerInside = false));
+
     window.addEventListener('resize', () => this.resize(root));
     window.addEventListener('keydown', (e) => {
       if (e.key === 'h' || e.key === 'H') {
@@ -130,6 +163,27 @@ export class App {
     this.renderer.setSize(w, h);
   }
 
+  /** 微生命动作：算出这一帧的 Pose 并应用到鸟身上（总开关关闭时不应用）。 */
+  private updateMotion(dt: number): void {
+    const m = this.motion;
+    this.bird.group.getWorldQuaternion(this.birdQuat);
+    this.birdInvQuat.copy(this.birdQuat).invert();
+    this.bird.headWorldPosition(this.headWorld);
+    let gaze: Vector3 | null = null;
+    if (m.gazeMode === 'pointer' && this.pointerInside) {
+      this.pointerRay.setFromCamera(this.pointerNdc, this.camera);
+      this.gazePlane.setFromNormalAndCoplanarPoint(this.camera.getWorldDirection(this.camDir).negate(), this.headWorld);
+      gaze = this.pointerRay.ray.intersectPlane(this.gazePlane, this.gazePoint);
+    }
+    const pose = m.update(dt, {
+      headWorld: this.headWorld,
+      worldToLocal: this.birdInvQuat,
+      cameraWorld: this.camera.position,
+      gazeWorld: gaze,
+    });
+    if (m.enabled) this.bird.applyPose(pose);
+  }
+
   private readonly tick = (now: number): void => {
     const dt = this.last ? Math.min((now - this.last) / 1000, 0.1) : 0.016;
     this.last = now;
@@ -138,6 +192,7 @@ export class App {
     this.controls.update();
     this.snowfall.update(this.elapsed);
     this.bird.update(dt);
+    this.updateMotion(dt);
     this.renderer.render(this.scene, this.camera);
 
     this.fpsCount++;
@@ -197,11 +252,32 @@ export class App {
     p.slider(hd, '抬头低头', -45, 45, 1, 0, (v) => ((pose.pitch = v), apply()), deg);
     p.slider(hd, '歪头', -90, 90, 1, 0, (v) => ((pose.roll = v), apply()), deg);
 
-    // 眨眼、瞬膜、张嘴、甩尾、弹翅：先手动摆姿态检查结构，M2 再接动作系统
+    const pct = (v: number): string => `${v.toFixed(0)}%`;
+
+    const ml = p.section('微生命');
+    p.toggle(ml, '动作系统', this.motion.enabled, (on) => {
+      this.motion.enabled = on;
+      if (!on) this.bird.applyPose(restPose());
+    });
+    p.slider(ml, '活跃度', 0, 100, 1, Math.round(this.motion.activity * 100), (v) => (this.motion.activity = v / 100), pct);
+    p.segmented(ml, ['随机注视', '跟随鼠标'], 0, (i) => (this.motion.gazeMode = i === 0 ? 'auto' : 'pointer'));
+    // 手动触发单个动作，方便逐个验收
+    const cues = document.createElement('div');
+    cues.className = 'seg';
+    const cueList: [string, MotionCue][] = [
+      ['歪头', 'tilt'],
+      ['眨眼', 'blink'],
+      ['瞬膜', 'nict'],
+      ['甩尾', 'tailFlick'],
+      ['弹翅', 'wingFlick'],
+    ];
+    for (const [label, kind] of cueList) p.button(cues, label, () => this.motion.cue(kind));
+    ml.appendChild(cues);
+
+    // 眨眼、瞬膜、张嘴、甩尾、弹翅：手动摆姿态检查结构（动作系统开着时会被它每帧覆盖）
     const mo = p.section('动作测试');
     const blink: BlinkPose = {};
     const applyBlink = (): void => this.bird.setBlink(blink);
-    const pct = (v: number): string => `${v.toFixed(0)}%`;
     p.slider(mo, '眨眼', 0, 100, 1, 0, (v) => ((blink.lidClose = v / 100), applyBlink()), pct);
     p.slider(mo, '眯眼', 0, 100, 1, 0, (v) => ((blink.squint = v / 100), applyBlink()), pct);
     p.slider(mo, '瞬膜', 0, 100, 1, 0, (v) => ((blink.nictClose = v / 100), applyBlink()), pct);

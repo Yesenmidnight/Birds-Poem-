@@ -1,7 +1,7 @@
 // 开发用截图工具：无头 Chromium 打开本地页面，按预设视角截图，并回报渲染器信息与控制台报错。
 // 用法：node tools/shoot.mjs <输出目录> <视角,逗号分隔|all> [附加查询串] [宽] [高]
 import { mkdirSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { chromium } from 'playwright-core';
 
 const [, , outDir = 'shots', views = 'threequarter', extraQuery = '', width = '1400', height = '900'] = process.argv;
@@ -26,7 +26,8 @@ page.on('pageerror', (e) => logs.push(`[pageerror] ${e.message}`));
 page.on('requestfailed', (r) => logs.push(`[requestfailed] ${r.url()} ${r.failure()?.errorText ?? ''}`));
 
 const t0 = Date.now();
-await page.goto(`${base}?ui=0&${extraQuery}`, { waitUntil: 'load' });
+// 默认关掉右侧面板；UI=1 时保留面板一起截
+await page.goto(`${base}?${process.env.UI ? '' : 'ui=0&'}${extraQuery}`, { waitUntil: 'load' });
 await page.waitForFunction(() => window.__birds !== undefined, null, { timeout: 120000 });
 const loadMs = Date.now() - t0;
 
@@ -43,15 +44,42 @@ const list =
 // 可选：截图前在页面里执行一段表达式（调试姿态、参数用）
 if (process.env.EVAL) await page.evaluate(process.env.EVAL);
 
+// 可选：动作定格序列 SEQ="<动作>:<t1,t2,...>"，触发一个动作后依次推进到各时刻截图，文件名加序号
+let seq = null;
+if (process.env.SEQ) {
+  const i = process.env.SEQ.indexOf(':');
+  seq = { cue: process.env.SEQ.slice(0, i), times: process.env.SEQ.slice(i + 1).split(',').map(Number) };
+}
+
 const results = [];
 for (const view of list) {
-  const file = resolve(outDir, `${view}.png`);
   await page.evaluate((v) => window.__birds.setView(v), view);
   // 等若干帧，让阻尼和阴影稳定下来
   await page.waitForTimeout(Number(process.env.WAIT ?? 1200));
-  mkdirSync(dirname(file), { recursive: true });
-  await page.screenshot({ path: file });
-  results.push(file);
+  mkdirSync(resolve(outDir), { recursive: true });
+  if (!seq) {
+    const file = resolve(outDir, `${view}.png`);
+    await page.screenshot({ path: file });
+    results.push(file);
+    continue;
+  }
+  await page.evaluate((c) => {
+    const m = window.__birds.motion;
+    m.paused = true;
+    m.cue(c);
+    window.__adv = 0;
+  }, seq.cue);
+  for (const [i, t] of seq.times.entries()) {
+    await page.evaluate((tt) => {
+      const m = window.__birds.motion;
+      m.advance(tt - window.__adv);
+      window.__adv = tt;
+    }, t);
+    await page.waitForTimeout(Number(process.env.SEQ_WAIT ?? 150));
+    const file = resolve(outDir, `${view}_${i}.png`);
+    await page.screenshot({ path: file });
+    results.push(file);
+  }
 }
 // 相同的告警只留一条，并记下次数；Vite 热更新引起的请求中止不算问题，除非显式要求全部输出
 const kept = process.env.VERBOSE ? logs : logs.filter((l) => !l.includes('ERR_ABORTED') && !l.includes('favicon'));

@@ -32,8 +32,14 @@ import {
   type Perch,
 } from './parts';
 import { clamp, lerp } from '../util/math';
+import type { Pose } from './motion/Pose';
 
 export type BirdPart = 'fur' | 'feathers' | 'beak' | 'eyes' | 'legs';
+
+/** 呼吸时胸腹绕这个中心微膨胀（腹部中心），绒毛、喙眼、翅尾一起被顶起，腿不动。 */
+const BREATH_CENTER = new Vector3(0, 1.85, -0.5);
+/** 吸满气时的纵向膨胀比例。 */
+const BREATH_SCALE = 0.015;
 
 /**
  * 眨眼：lidClose 为合拢程度 0..1（下睑上抬约 70%、上睑下压约 30%）；
@@ -79,6 +85,8 @@ export class Bird {
   readonly params: BodyParams;
 
   private readonly parts: Record<BirdPart, { objs: Object3D[]; on: boolean }>;
+  // 呼吸空间：绒毛、喙眼、翅、尾都挂在这里，跟着胸腹一起微膨胀（腿不膨胀）
+  private readonly breathSpace = new Group();
   // 喙和眼是刚体，整组跟着头部骨骼的矩阵走
   private readonly headParts = new Group();
   private readonly jawUpper = new Group();
@@ -103,6 +111,7 @@ export class Bird {
     const body = buildBody(params);
     this.bodyGeometry = body.geometry;
     this.fur = new Fur(body.geometry, lighting);
+    this.breathSpace.matrixAutoUpdate = false;
 
     // ---------- 双翅与尾：各自一个枢轴 ----------
     const wingMat = makeFeatherMaterial(lighting);
@@ -123,7 +132,7 @@ export class Bird {
       const pivot = this.wingPivots[side];
       pivot.position.set(s * WING_PIVOT.x, WING_PIVOT.y, WING_PIVOT.z);
       pivot.add(panel, mesh);
-      this.group.add(pivot);
+      this.breathSpace.add(pivot);
     }
     const tail = buildTail(params);
     featherCount += tail.count;
@@ -132,7 +141,7 @@ export class Bird {
     tailMesh.receiveShadow = true;
     this.tailPivot.position.set(params.tailBase[0], params.tailBase[1], params.tailBase[2]);
     this.tailPivot.add(tailMesh);
-    this.group.add(this.tailPivot);
+    this.breathSpace.add(this.tailPivot);
 
     // ---------- 上下喙：绕嘴根铰链张合 ----------
     const beakBase = new Vector3(...params.beakBase);
@@ -186,7 +195,8 @@ export class Bird {
       eyes: { objs: [...this.headParts.children.filter((c) => c !== this.jawUpper && c !== this.jawLower)], on: true },
       legs: { objs: [legs], on: true },
     };
-    this.group.add(this.headParts, legs, this.fur.group);
+    this.breathSpace.add(this.headParts, this.fur.group);
+    this.group.add(this.breathSpace, legs);
 
     // 落在枝上：沿枝条站立，面朝 -X
     this.group.rotation.y = -Math.PI / 2;
@@ -224,6 +234,35 @@ export class Bird {
     this.fur.setBone(1, this.mHead);
     this.headParts.matrix.copy(this.mHead);
     this.headParts.matrixWorldNeedsUpdate = true;
+  }
+
+  /**
+   * 呼吸膨胀（0..1 吸气量）：呼吸空间绕腹部中心做非等比微缩放（纵向满幅、宽 0.6 倍、长 0.3 倍），
+   * 绒毛、喙眼和翅尾一起被顶起，腿不受影响。
+   */
+  setBreath(amount: number): void {
+    const s = BREATH_SCALE * clamp(amount, 0, 1.5);
+    const c = BREATH_CENTER;
+    const m = this.breathSpace.matrix;
+    m.makeScale(1 + 0.6 * s, 1 + s, 1 + 0.3 * s);
+    m.setPosition(c.x * -0.6 * s, c.y * -s, c.z * -0.3 * s);
+    this.breathSpace.matrixWorldNeedsUpdate = true;
+  }
+
+  /** 把动作系统叠加好的姿态一次性应用到头颈、眼睑、喙、双翅、尾和呼吸。 */
+  applyPose(pose: Pose): void {
+    this.setHeadPose(pose.head.yaw, pose.head.pitch, pose.head.roll);
+    this.setBlink({ lidClose: pose.eye.lidClose, squint: pose.eye.squint, nictClose: pose.eye.nict });
+    this.setJawOpen(pose.jaw);
+    this.setWingPose('left', pose.wing.left);
+    this.setWingPose('right', pose.wing.right);
+    this.setTailPose(pose.tail);
+    this.setBreath(pose.breath);
+  }
+
+  /** 眼睛高度处的头部世界坐标，动作系统换算注视角用。 */
+  headWorldPosition(out: Vector3): Vector3 {
+    return this.headParts.localToWorld(out.set(0, 3.45, 0.8));
   }
 
   /**
