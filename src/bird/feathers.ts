@@ -37,6 +37,8 @@ export interface FeatherSpec {
   color: FeatherColorFn;
   /** 羽缘柔度：0 为清晰的羽片，1 为边缘过渡变宽、磨损缺口变浅（肩羽用，让它像从绒毛里长出来）。 */
   edgeSoft?: number;
+  /** 扇开信息（尾羽用）：[左右侧 ±1, 第几对 0..1]。配合材质的 uSpread 绕羽根竖直轴转动。 */
+  fan?: [number, number];
 }
 
 /** 横向 9 列（中线两侧各 4 列），靠外缘更密一些以便弯出弧度。 */
@@ -60,6 +62,7 @@ export class FeatherBatch {
   private readonly phy: number[] = [];
   private readonly size: number[] = [];
   private readonly soft: number[] = [];
+  private readonly fan: number[] = [];
   private readonly axis: number[] = [];
   private readonly idx: number[] = [];
   private base = 0;
@@ -123,6 +126,7 @@ export class FeatherBatch {
       this.phy.push(phy[i * 2], phy[i * 2 + 1]);
       this.size.push(spec.length, spec.width);
       this.soft.push(spec.edgeSoft ?? 0);
+      this.fan.push(spec.fan?.[0] ?? 0, spec.fan?.[1] ?? 0);
       this.axis.push(axisW.x, axisW.y, axisW.z);
     }
     for (const i of index) this.idx.push(this.base + i);
@@ -140,6 +144,7 @@ export class FeatherBatch {
     g.setAttribute('aPhy', new BufferAttribute(new Float32Array(this.phy), 2));
     g.setAttribute('aSize', new BufferAttribute(new Float32Array(this.size), 2));
     g.setAttribute('aSoft', new BufferAttribute(new Float32Array(this.soft), 1));
+    g.setAttribute('aFan', new BufferAttribute(new Float32Array(this.fan), 2));
     g.setAttribute('aAxis', new BufferAttribute(new Float32Array(this.axis), 3));
     g.setIndex(this.idx);
     g.computeBoundingSphere();
@@ -170,7 +175,10 @@ attribute vec3 aCol;
 attribute vec2 aPhy;
 attribute vec2 aSize;
 attribute float aSoft;
+attribute vec2 aFan;
 attribute vec3 aAxis;
+// 尾羽扇开角（弧度）：每片羽绕羽根所在的竖直轴转动，外侧的羽转得更多
+uniform float uSpread;
 varying vec2 vFrag;
 varying vec3 vCol;
 varying vec2 vPhy;
@@ -185,7 +193,14 @@ const FEATHER_VERTEX_MAIN = /* glsl */ `
 	vPhy = aPhy;
 	vSize = aSize;
 	vSoft = aSoft;
-	vAxisW = normalize( mat3( modelMatrix ) * aAxis );
+	// 几何原点就是羽根（尾基），直接绕局部 Y 轴转
+	float fan = -uSpread * aFan.x * ( 0.2 + 0.8 * aFan.y );
+	float fc = cos( fan );
+	float fs = sin( fan );
+	pos = vec3( pos.x * fc + pos.z * fs, pos.y, -pos.x * fs + pos.z * fc );
+	nrm = vec3( nrm.x * fc + nrm.z * fs, nrm.y, -nrm.x * fs + nrm.z * fc );
+	vec3 axis = vec3( aAxis.x * fc + aAxis.z * fs, aAxis.y, -aAxis.x * fs + aAxis.z * fc );
+	vAxisW = normalize( mat3( modelMatrix ) * axis );
 `;
 
 const FEATHER_FRAGMENT_PARS = /* glsl */ `
@@ -216,34 +231,37 @@ const FEATHER_SURFACE = /* glsl */ `
 	// 羽轴：一条细而有光泽的中线
 	float rachis = exp( - pow( vPhy.x / 0.013, 2.0 ) ) * ( 1.0 - smoothstep( 0.85, 1.0, along ) );
 	alb = mix( alb, alb * 1.4 + 0.015, rachis * 0.6 );
-	// 羽缘不规则的磨损缺口；柔度高的羽毛缺口更浅、过渡更宽
+	// 羽缘不规则的磨损缺口：细碎而浅，白边保持连续，不会啃成锯齿；柔度高的羽毛缺口更浅
 	float fray = snoise( vec3( vPhy.y * 55.0, vSize.x * 37.0, 3.0 ) ) * 0.5 + 0.5;
-	float lim = mix( 0.86 + 0.14 * fray, 0.94 + 0.06 * fray, vSoft );
+	float fray2 = snoise( vec3( vPhy.y * 150.0, vSize.x * 91.0, 7.0 ) ) * 0.5 + 0.5;
+	float wear = fray * 0.6 + fray2 * 0.4;
+	float lim = mix( 0.965 + 0.035 * wear, 0.975 + 0.025 * wear, vSoft );
 	float aa = fwidth( edge ) * ( 1.0 + 2.5 * vSoft ) + 1e-5;
 	float alpha = 1.0 - smoothstep( lim - aa, lim + aa, edge );
 	Surf s;
 	s.alpha = alpha;
 	s.albedo = alb;
-	s.ao = 1.0;
+	// 羽根被上一片羽毛压住：环境光遮蔽向羽尖过渡，叠压才有层次
+	s.ao = mix( 0.55, 1.0, smoothstep( 0.0, 0.55, along ) );
 	s.wrap = 0.35;
 	float dark = 1.0 - smoothstep( 0.05, 0.25, lum );
 	s.specTint = mix( vec3( 1.0 ), vec3( 0.8, 0.85, 1.0 ), dark );
 	s.gloss = 0.68;
-	s.specAmt = mix( 0.08, 0.5, dark );
+	s.specAmt = mix( 0.04, 0.12, dark );
 	return s;
 `;
 
 const FEATHER_EXTRA_LIGHT = /* glsl */ `
-	// 沿羽轴方向的各向异性光泽：黑色飞羽那种丝缎般的反光
+	// 沿羽轴方向的各向异性光泽：黑色飞羽那种丝缎般的反光（收敛一些，不然叠成一整片黑羽时像漆皮）
 	vec3 T = normalize( vAxisW );
 	vec3 H = normalize( uSunDir + V );
 	float tdh = dot( T, H );
 	float sinTH = sqrt( max( 1.0 - tdh * tdh, 0.0 ) );
 	float lum = dot( vCol, vec3( 0.3, 0.5, 0.2 ) );
 	float dark = 1.0 - smoothstep( 0.05, 0.25, lum );
-	float amt = mix( 0.05, 0.5, dark );
+	float amt = mix( 0.02, 0.15, dark );
 	vec3 tint = mix( vec3( 1.0 ), vec3( 0.78, 0.84, 1.0 ), dark );
-	return uSunColor * pow( sinTH, 90.0 ) * amt * sunShadow() * tint;
+	return uSunColor * pow( sinTH, 110.0 ) * amt * sunShadow() * tint;
 `;
 
 export function makeFeatherMaterial(lighting: LightingUniforms): ShaderMaterial {
@@ -251,6 +269,7 @@ export function makeFeatherMaterial(lighting: LightingUniforms): ShaderMaterial 
     lighting,
     side: DoubleSide,
     alphaToCoverage: true,
+    uniforms: { uSpread: { value: 0 } },
     vertexPars: FEATHER_VERTEX_PARS,
     vertexMain: FEATHER_VERTEX_MAIN,
     fragmentPars: FEATHER_FRAGMENT_PARS,

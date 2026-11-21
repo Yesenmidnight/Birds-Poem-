@@ -19,6 +19,12 @@ export interface BodyAttributes {
   triangleCount: number;
 }
 
+/** 口角暗线：从嘴角出发向后下方伸进绒毛里的那一小段（右半身，左半身镜像）。 */
+const GAPE_A: [number, number, number] = [0.15, 3.55, 1.545];
+const GAPE_B: [number, number, number] = [0.31, 3.47, 1.48];
+const GAPE_D = [GAPE_B[0] - GAPE_A[0], GAPE_B[1] - GAPE_A[1], GAPE_B[2] - GAPE_A[2]];
+const GAPE_LEN2 = GAPE_D[0] ** 2 + GAPE_D[1] ** 2 + GAPE_D[2] ** 2;
+
 export function buildBody(params: BodyParams = LONG_TAILED_TIT, cell = 0.055): BodyAttributes {
   const { min, max } = params.bounds;
   const t0 = performance.now();
@@ -33,6 +39,10 @@ export function buildBody(params: BodyParams = LONG_TAILED_TIT, cell = 0.055): B
 
   const g = [0, 0, 0];
   const [bx, by, bz] = params.beakBase;
+  // 喙的“上方”：喙轴（在 yz 平面里）与 x 轴的叉积
+  const upl = Math.hypot(params.beakDir[2], params.beakDir[1]);
+  const upy = params.beakDir[2] / upl;
+  const upz = -params.beakDir[1] / upl;
 
   for (let i = 0; i < count; i++) {
     const x = net.positions[i * 3];
@@ -99,24 +109,50 @@ export function buildBody(params: BodyParams = LONG_TAILED_TIT, cell = 0.055): B
     flow.set([fx / fl, fy / fl, fz / fl], i * 3);
 
     // ---- 绒毛长度系数 ----
-    // 脸颊和喉部最蓬，背部较短，翅上区域让位给正羽
-    let furLen =
-      1.0 + 0.12 * wHead * (1 - smoothstep(0.35, 0.8, ny)) + 0.06 * wChest - 0.16 * wBack * smoothstep(0.0, 0.6, ny);
+    // 脸颊和喉部最蓬，背上较短
+    let furLen = 1.0 + 0.12 * wHead * (1 - smoothstep(0.35, 0.8, ny)) + 0.06 * wChest;
+    // 背上短一截，从后颈往头顶逐渐放长，颈背交界处不留一道棱
+    furLen -= 0.16 * smoothstep(0.0, 0.6, ny) * (1 - smoothstep(2.75, 3.4, y)) * (1 - smoothstep(-0.3, 0.3, z));
     const s = x >= 0 ? 1 : -1;
+    const er = params.eyeRadius;
     const eyeD = eyeAxisDist(x, y, z, params, s);
-    const eyeMask = 1 - smoothstep(params.eyePatch * 0.78, params.eyePatch * 1.1, eyeD);
-    furLen *= 1 - 0.97 * eyeMask;
+    // 眼周只在眼睑壳那一圈压秃：下眼圈露出一线眼睑皮肤，眉弓的白绒则直接压到上睑缘
+    const eyeCy = params.head.c[1] + params.eyeDir[1] * 0.66;
+    const brow = smoothstep(-0.01, 0.07, y - eyeCy);
+    const lidR = er * (0.64 - 0.2 * brow);
+    furLen *= 1 - 0.95 * (1 - smoothstep(lidR, lidR + er * 0.28, eyeD));
+    // 嘴根附近绒毛略短；喙壳底下的体表彻底压住，毛尖不会从黑喙里钻出来
     const beakD = Math.hypot(x - bx, y - by, z - bz);
     furLen *= 0.55 + 0.45 * smoothstep(0.15, 0.45, beakD);
-    // 翅膀覆盖区（两胁中后段）；肩部一带的绒毛留长一点，让它自然漫过肩羽的根部
-    const wingMask =
+    const bUp = (y - by) * upy + (z - bz) * upz;
+    furLen *= smoothstep(0.95, 1.2, Math.hypot(x / 0.17, (bUp - 0.035) / 0.13));
+    // 口角线上的毛略短，嘴角向后延伸的暗线才读得出来
+    {
+      const gx = Math.abs(x) - GAPE_A[0];
+      const gy = y - GAPE_A[1];
+      const gz = z - GAPE_A[2];
+      const gt = clamp((gx * GAPE_D[0] + gy * GAPE_D[1] + gz * GAPE_D[2]) / GAPE_LEN2, 0, 1);
+      const d = Math.hypot(gx - GAPE_D[0] * gt, gy - GAPE_D[1] * gt, gz - GAPE_D[2] * gt);
+      furLen *= 1 - 0.35 * (1 - smoothstep(0.015, 0.045, d));
+    }
+    // 翅身（收拢的覆羽、次级飞羽贴着身子的那一块）：绒毛比胸腹略短、带着玫瑰色，
+    // 像翅膀垫在毛底下的一块平整区域；前缘留出过渡，胸侧的白绒顺势包住翅的前弯
+    const wingBody =
       smoothstep(0.8, 1.05, Math.abs(x)) *
       smoothstep(1.95, 2.25, y) *
       (1 - smoothstep(3.0, 3.3, y)) *
       (1 - smoothstep(0.1, 0.5, z)) *
       (1 - smoothstep(-2.6, -2.2, z));
     const shoulder = smoothstep(2.65, 3.0, y);
-    furLen = furLen * (1 - wingMask) + (0.4 + 0.35 * shoulder) * wingMask;
+    furLen = furLen * (1 - wingBody) + (0.45 + 0.3 * shoulder) * wingBody;
+    // 初级飞羽的羽扇从后下方探出来搭在臀部上：那一带的绒毛压到很短，毛尖不从黑羽里钻出来
+    const fan =
+      smoothstep(0.8, 1.05, Math.abs(x)) *
+      smoothstep(2.15, 2.4, y) *
+      (1 - smoothstep(2.8, 3.05, y)) *
+      (1 - smoothstep(-1.0, -0.7, z)) *
+      (1 - smoothstep(-3.5, -3.2, z));
+    furLen = furLen * (1 - fan) + 0.12 * fan;
     // 腹底靠近腿的位置也短一些
     furLen *= 0.7 + 0.3 * smoothstep(0.35, 0.7, y);
 
@@ -127,8 +163,8 @@ export function buildBody(params: BodyParams = LONG_TAILED_TIT, cell = 0.055): B
       (1 - wHeadBone) * smoothstep(0.95, 1.2, dh) * (1 - smoothstep(1.35, 1.95, dh));
     weights.set([wNeckBone, wHeadBone], i * 2);
 
-    // 眼周裸区传给着色器，用来画深色皮肤
-    param.set([furLen, fract(Math.sin(i * 12.9898) * 43758.5453), eyeMask], i * 3);
+    // aParam：毛长系数、逐顶点随机数、离眼中轴线的距离（着色器据此画眼睑里的深色皮肤）
+    param.set([furLen, fract(Math.sin(i * 12.9898) * 43758.5453), eyeD], i * 3);
   }
 
   const geometry = new BufferGeometry();

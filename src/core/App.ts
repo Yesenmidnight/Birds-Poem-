@@ -6,7 +6,7 @@ import { Backdrop } from '../world/Backdrop';
 import { Branches } from '../world/Branch';
 import { Sky } from '../world/Sky';
 import { Snowfall } from '../world/Snowfall';
-import { Bird, type BirdPart } from '../bird/Bird';
+import { Bird, type BirdPart, type BlinkPose, type TailPose, type WingPose } from '../bird/Bird';
 import { FUR_DEFAULTS } from '../bird/fur';
 import type { Perch } from '../bird/parts';
 
@@ -196,6 +196,25 @@ export class App {
     p.slider(hd, '左右转', -100, 100, 1, 0, (v) => ((pose.yaw = v), apply()), deg);
     p.slider(hd, '抬头低头', -45, 45, 1, 0, (v) => ((pose.pitch = v), apply()), deg);
     p.slider(hd, '歪头', -90, 90, 1, 0, (v) => ((pose.roll = v), apply()), deg);
+
+    // 眨眼、瞬膜、张嘴、甩尾、弹翅：先手动摆姿态检查结构，M2 再接动作系统
+    const mo = p.section('动作测试');
+    const blink: BlinkPose = {};
+    const applyBlink = (): void => this.bird.setBlink(blink);
+    const pct = (v: number): string => `${v.toFixed(0)}%`;
+    p.slider(mo, '眨眼', 0, 100, 1, 0, (v) => ((blink.lidClose = v / 100), applyBlink()), pct);
+    p.slider(mo, '眯眼', 0, 100, 1, 0, (v) => ((blink.squint = v / 100), applyBlink()), pct);
+    p.slider(mo, '瞬膜', 0, 100, 1, 0, (v) => ((blink.nictClose = v / 100), applyBlink()), pct);
+    p.slider(mo, '张嘴', 0, 40, 1, 0, (v) => this.bird.setJawOpen((v * Math.PI) / 180), deg);
+    const tail: TailPose = {};
+    const applyTail = (): void => this.bird.setTailPose(tail);
+    p.slider(mo, '尾上翘', -40, 70, 1, 0, (v) => ((tail.pitch = (v * Math.PI) / 180), applyTail()), deg);
+    p.slider(mo, '尾左右甩', -80, 80, 1, 0, (v) => ((tail.yaw = (v * Math.PI) / 180), applyTail()), deg);
+    p.slider(mo, '尾扇开', 0, 100, 1, 0, (v) => ((tail.spread = (v / 100) * 0.6), applyTail()), pct);
+    const wing: WingPose = {};
+    const applyWing = (): void => this.bird.setWingPose('both', wing);
+    p.slider(mo, '翅上抬', 0, 70, 1, 0, (v) => ((wing.lift = (v * Math.PI) / 180), applyWing()), deg);
+    p.slider(mo, '翅后扫', 0, 70, 1, 0, (v) => ((wing.sweep = (v * Math.PI) / 180), applyWing()), deg);
 
     const pt = p.section('部件');
     const parts: [BirdPart, string][] = [
