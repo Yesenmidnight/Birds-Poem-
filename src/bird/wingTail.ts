@@ -88,6 +88,12 @@ interface RowSpec {
   lenJitter?: number;
   /** 羽缘柔度（见 FeatherSpec.edgeSoft）。 */
   edgeSoft?: number;
+  /**
+   * 羽根往体表里扣的深度（cm）：真鸟翅膀的前缘（腕弯）和上缘（覆羽根）是埋进肩胸绒毛里的，
+   * 不是一层悬在外面的纸片。tuckAll 对整排羽根生效（上缘），tuckFront 只对每排最前面几片生效（前缘）。
+   */
+  tuckAll?: number;
+  tuckFront?: number;
 }
 
 /**
@@ -122,6 +128,7 @@ const WING_ROWS: RowSpec[] = [
     twist: 0.06,
     color: primary,
     stack: 0,
+    tuckFront: 0.04,
   },
   {
     // 次级飞羽：从翅根朝后下方顺向叠瓦，连成一整片深色翼面，下缘一条奶油白细羽缘
@@ -145,6 +152,7 @@ const WING_ROWS: RowSpec[] = [
     color: flight,
     stack: 0.003,
     expose: 0.89,
+    tuckFront: 0.04,
   },
   {
     // 三级飞羽：3 片上下错开、侧缘相压，盖在次级飞羽的中后段上，两缘的奶油白羽缘连成 2~3 道细白线
@@ -167,6 +175,7 @@ const WING_ROWS: RowSpec[] = [
     twist: 0,
     color: tertial,
     stack: 0,
+    tuckFront: 0.04,
   },
   {
     // 初级覆羽：盖住腕部初级飞羽的根部
@@ -190,9 +199,10 @@ const WING_ROWS: RowSpec[] = [
     color: covertSmall,
     stack: 0.002,
     expose: 0.75,
+    tuckFront: 0.04,
   },
   {
-    // 大覆羽：9 片宽而柔边的羽片顺翅长叠瓦，白梢融成一道柔和倾斜的浅色翼斑
+    // 大覆羽：9 片宽而柔边的羽片顺翅长叠瓦，深炭黑褐，和白翼斑无关（见 covert）
     count: 9,
     rootA: [2.98, -0.14, 0.08],
     rootB: [2.82, -1.32, 0.08],
@@ -214,6 +224,9 @@ const WING_ROWS: RowSpec[] = [
     stack: 0.0015,
     expose: 0.66,
     edgeSoft: 1,
+    // 上缘：整排羽根埋进肩背绒毛里，只有羽身露在外面
+    tuckAll: 0.03,
+    tuckFront: 0.03,
   },
   {
     // 中覆羽：最外层的黑色窄带，根部被肩背的玫瑰粉棕绒毛搭住
@@ -237,6 +250,9 @@ const WING_ROWS: RowSpec[] = [
     color: covertSmall,
     stack: 0.0015,
     expose: 0.78,
+    // 上缘 + 前缘：翅的上角整个埋进肩部绒毛窝里
+    tuckAll: 0.04,
+    tuckFront: 0.03,
   },
 ];
 
@@ -280,12 +296,13 @@ function widthProfile(v: number, tipPos: number, tipPow: number): number {
 const UP = new Vector3(0, 1, 0);
 
 /**
- * 翅根枢轴（鸟局部坐标，右翅；左翅镜像）= 肩关节，放在收拢翅的上缘。
- * 翅膀绕它抬落、前后扫、翻转：大幅弹翅时整片翅从肩头往外张开，肩部的覆羽不会反过来压进体表绒毛里
+ * 翅根枢轴（鸟局部坐标，右翅；左翅镜像）= 真实的肩关节：在翅膀最前端、深埋在胸肩绒毛窝的里侧。
+ * 弹翅时腕肩前部始终埋在绒毛里不动，只有中后段翼面和翅尖绕它往背上方扬起，
+ * 前缘不会像掀车门一样翻出体外戳出黑尖刺。
  */
-export const WING_PIVOT = new Vector3(0.9, 3.12, -0.6);
+export const WING_PIVOT = new Vector3(0.62, 2.85, -0.15);
 
-/** 一片羽在侧面 (y, z) 上的投影，翼面底板用它算羽片的覆盖范围。 */
+/** 一片羽在侧面 (y, z) 上的投影，翼面底板和翼下压毛都用它算羽片的覆盖范围。 */
 interface Placement {
   y0: number;
   z0: number;
@@ -305,15 +322,26 @@ export interface FeatherSet {
   placements: Placement[];
 }
 
-/** 收拢的右翅：几何在鸟局部坐标里，所有顶点都已减去枢轴，便于绕枢轴旋转。 */
-export function buildWing(p: BodyParams, seed = 5, side: 1 | -1 = 1): FeatherSet {
-  const batch = new FeatherBatch();
+/** 一片放好的羽毛：羽根、方向、法线、长度、规格，以及侧面投影。 */
+interface PlacedFeather {
+  root: Vector3;
+  dir: Vector3;
+  nrm: Vector3;
+  spec: FeatherSpec;
+  placement: Placement;
+}
+
+/**
+ * 收拢右翅的全部羽片 placement（随机种子固定，左右翅共用同一份侧面投影）。
+ * 羽根的 x = 体表 + 偏移 − 内扣；给出羽尖的排（飞羽）羽尖贴在体表包络面上。
+ */
+function placeWingFeathers(p: BodyParams, seed = 5): PlacedFeather[] {
   const rng = makeRng(seed);
   const root = new Vector3();
   const dir = new Vector3();
   const nrm = new Vector3();
   const tip = new Vector3();
-  const placements: Placement[] = [];
+  const out: PlacedFeather[] = [];
 
   for (const row of WING_ROWS) {
     for (let i = 0; i < row.count; i++) {
@@ -321,7 +349,9 @@ export function buildWing(p: BodyParams, seed = 5, side: 1 | -1 = 1): FeatherSet
       const y = lerp(row.rootA[0], row.rootB[0], f) + (rng() - 0.5) * 0.03;
       const z = lerp(row.rootA[1], row.rootB[1], f) + (rng() - 0.5) * 0.03;
       const offset = lerp(row.rootA[2], row.rootB[2], f) - i * row.stack;
-      root.set(surfaceHalfWidth(p, y, z) + offset, y, z);
+      // 前缘与上缘的羽根往体表里扣：上缘整排都扣，前缘只扣每排最前面几片
+      const tuck = (row.tuckAll ?? 0) + (row.tuckFront ?? 0) * (1 - smooth(0, 0.35, f));
+      root.set(surfaceHalfWidth(p, y, z) + offset - tuck, y, z);
 
       const jitter = row.lenJitter ?? 0.03;
       let len = lerp(row.lenA, row.lenB, f) * (1 + (rng() - 0.5) * 2 * jitter);
@@ -364,61 +394,84 @@ export function buildWing(p: BodyParams, seed = 5, side: 1 | -1 = 1): FeatherSet
         edgeSoft: row.edgeSoft,
         expose: row.expose,
       };
-      const m = featherMatrix(root, dir, nrm);
-      batch.add(spec, side === 1 ? m : mirrorMatrix(m));
-
       // 侧面投影（右半身坐标）：羽轴方向投到 (y, z) 平面
       const pl = Math.hypot(dir.y, dir.z) || 1;
-      placements.push({
-        y0: y,
-        z0: z,
-        dy: dir.y / pl,
-        dz: dir.z / pl,
-        len,
-        width: row.width,
-        asym: row.asym,
-        bare: row.bare,
-        tipPos: row.tipPos,
-        tipPow: row.tipPow,
+      out.push({
+        root: root.clone(),
+        dir: dir.clone(),
+        nrm: nrm.clone(),
+        spec,
+        placement: {
+          y0: y,
+          z0: z,
+          dy: dir.y / pl,
+          dz: dir.z / pl,
+          len,
+          width: row.width,
+          asym: row.asym,
+          bare: row.bare,
+          tipPos: row.tipPos,
+          tipPow: row.tipPow,
+        },
       });
     }
   }
+  return out;
+}
+
+/** 收拢翅全部羽片的侧面投影：翼内底壳和翼下压毛的覆盖范围都从它来。 */
+export function wingPlacements(p: BodyParams, seed = 5): Placement[] {
+  return placeWingFeathers(p, seed).map((f) => f.placement);
+}
+
+/**
+ * 收拢的右翅：几何在鸟局部坐标里，所有顶点都已减去枢轴，便于绕枢轴旋转。
+ * 每片羽顺着体表弯曲贴合（见 FeatherBatch.conformToBody），中后段不再悬空。
+ */
+export function buildWing(p: BodyParams, seed = 5, side: 1 | -1 = 1): FeatherSet {
+  const batch = new FeatherBatch();
+  const feathers = placeWingFeathers(p, seed);
+  for (const f of feathers) {
+    const m = featherMatrix(f.root, f.dir, f.nrm);
+    batch.add(f.spec, side === 1 ? m : mirrorMatrix(m));
+  }
+  batch.conformToBody((y, z) => surfaceHalfWidth(p, y, z));
 
   const geometry = batch.build();
   geometry.translate(-side * WING_PIVOT.x, -WING_PIVOT.y, -WING_PIVOT.z);
-  return { geometry, count: batch.count, placements };
+  return { geometry, count: batch.count, placements: feathers.map((f) => f.placement) };
 }
 
-/** 翼面底板的采样范围与步长（鸟局部坐标，右半身）。 */
+/** 翼面覆盖距离场的采样范围与步长（鸟局部坐标，右半身）。 */
 const PANEL_Z0 = 0.3;
 const PANEL_Z1 = -3.5;
 const PANEL_Y0 = 1.7;
 const PANEL_Y1 = 3.3;
 const PANEL_CELL = 0.03;
-/** 底板相对羽片轮廓的内缩量：离无羽区不到这个距离的地方不画。 */
-const PANEL_INSET = 0.08;
-/** 内缩量之外的渐隐宽度。 */
-const PANEL_FADE = 0.07;
 
 /**
- * 收拢翅的翼内遮光底壳：严格藏在正羽轮廓以内的一整片深色薄壳，只负责堵住羽片根部之间的缝，
- * 翅膀的外轮廓 100% 由羽片自身的圆弧和尖端决定。
- * 做法是先把所有羽片投到侧面 (y, z) 平面算出覆盖范围，再对覆盖范围做距离变换：
- * 离无羽区不到 0.08 cm 的地方不画，0.08~0.15 cm 之间渐隐——形状自然内缩、边缘圆润，
- * 绝不会伸出羽片之外形成直边或折角。
+ * 羽片覆盖的有符号距离场：侧面 (y, z) 任一点到羽片覆盖边缘的距离（cm）——有羽处为正，无羽处为负。
  */
-export function buildWingPanel(p: BodyParams, side: 1 | -1, placements: Placement[]): BufferGeometry {
-  const nz = Math.ceil((PANEL_Z0 - PANEL_Z1) / PANEL_CELL) + 1;
-  const ny = Math.ceil((PANEL_Y1 - PANEL_Y0) / PANEL_CELL) + 1;
+export interface CoverField {
+  sample(y: number, z: number): number;
+}
+
+/**
+ * 把所有羽片投到侧面 (y, z) 平面算出覆盖范围，再做倒角距离变换。
+ * 翼内底壳的内缩轮廓和翼下压毛的范围都从这一个场来：离无羽区不到某个距离的地方不算“被翅盖住”。
+ */
+export function wingCoverField(placements: Placement[], cell = PANEL_CELL): CoverField {
+  const nz = Math.ceil((PANEL_Z0 - PANEL_Z1) / cell) + 1;
+  const ny = Math.ceil((PANEL_Y1 - PANEL_Y0) / cell) + 1;
   const covered = new Uint8Array(nz * ny);
   const dist = new Float32Array(nz * ny);
   const INF = 1e9;
 
   const at = (i: number, j: number): number => i * ny + j;
   for (let i = 0; i < nz; i++) {
-    const z = PANEL_Z0 - i * PANEL_CELL;
+    const z = PANEL_Z0 - i * cell;
     for (let j = 0; j < ny; j++) {
-      const y = PANEL_Y0 + j * PANEL_CELL;
+      const y = PANEL_Y0 + j * cell;
       let hit = 0;
       for (const f of placements) {
         const qy = y - f.y0;
@@ -440,34 +493,85 @@ export function buildWingPanel(p: BodyParams, side: 1 | -1, placements: Placemen
     }
   }
 
-  // 倒角距离变换：每个采样点到最近的“无羽”采样点的距离（cm）
-  const D1 = PANEL_CELL;
-  const D2 = PANEL_CELL * Math.SQRT2;
+  // 倒角距离变换两遍：有羽的格子到最近“无羽”格子的距离（din），无羽的格子到最近有羽格子的距离（dout）
+  const chamfer = (d: Float32Array, pass: (i: number, j: number) => boolean): void => {
+    const D1 = cell;
+    const D2 = cell * Math.SQRT2;
+    for (let i = 0; i < nz; i++) {
+      for (let j = 0; j < ny; j++) {
+        if (!pass(i, j)) continue;
+        let v = d[at(i, j)];
+        if (i > 0) v = Math.min(v, d[at(i - 1, j)] + D1);
+        if (j > 0) v = Math.min(v, d[at(i, j - 1)] + D1);
+        if (i > 0 && j > 0) v = Math.min(v, d[at(i - 1, j - 1)] + D2);
+        if (i > 0 && j < ny - 1) v = Math.min(v, d[at(i - 1, j + 1)] + D2);
+        d[at(i, j)] = v;
+      }
+    }
+    for (let i = nz - 1; i >= 0; i--) {
+      for (let j = ny - 1; j >= 0; j--) {
+        if (!pass(i, j)) continue;
+        let v = d[at(i, j)];
+        if (i < nz - 1) v = Math.min(v, d[at(i + 1, j)] + D1);
+        if (j < ny - 1) v = Math.min(v, d[at(i, j + 1)] + D1);
+        if (i < nz - 1 && j < ny - 1) v = Math.min(v, d[at(i + 1, j + 1)] + D2);
+        if (i < nz - 1 && j > 0) v = Math.min(v, d[at(i + 1, j - 1)] + D2);
+        d[at(i, j)] = v;
+      }
+    }
+  };
+  // dist 已初始化为“有羽 = INF、无羽 = 0”，第一遍只更新有羽的格子
+  chamfer(dist, (i, j) => covered[at(i, j)] === 1);
+  const outside = new Float32Array(nz * ny);
+  for (let k = 0; k < outside.length; k++) outside[k] = covered[k] ? 0 : 1e9;
+  chamfer(outside, (i, j) => covered[at(i, j)] === 0);
+
+  // 双线性采样有符号距离：有羽处为正（到羽片覆盖边缘的距离），无羽处为负（到覆盖边缘的距离）；
+  // 采样范围之外当作很远的无羽区
+  const iz = (z: number): number => (PANEL_Z0 - z) / cell;
+  const iy = (y: number): number => (y - PANEL_Y0) / cell;
+  const signed = (i: number, j: number): number => (covered[at(i, j)] ? dist[at(i, j)] : -outside[at(i, j)]);
+  return {
+    sample(y: number, z: number): number {
+      const fi = iz(z);
+      const fj = iy(y);
+      if (fi < -1 || fj < -1 || fi > nz || fj > ny) return -0.5;
+      const i = Math.min(nz - 2, Math.max(0, Math.floor(fi)));
+      const j = Math.min(ny - 2, Math.max(0, Math.floor(fj)));
+      const tz = Math.min(1, Math.max(0, fi - i));
+      const ty = Math.min(1, Math.max(0, fj - j));
+      const d00 = signed(i, j);
+      const d10 = signed(i + 1, j);
+      const d01 = signed(i, j + 1);
+      const d11 = signed(i + 1, j + 1);
+      return (d00 * (1 - tz) + d10 * tz) * (1 - ty) + (d01 * (1 - tz) + d11 * tz) * ty;
+    },
+  };
+}
+
+/** 底板相对羽片轮廓的内缩量：离无羽区不到这个距离的地方不画。 */
+const PANEL_INSET = 0.08;
+/** 内缩量之外的渐隐宽度。 */
+const PANEL_FADE = 0.07;
+
+/**
+ * 收拢翅的翼内遮光底壳：严格藏在正羽轮廓以内的一整片深色薄壳，只负责堵住羽片根部之间的缝，
+ * 翅膀的外轮廓 100% 由羽片自身的圆弧和尖端决定。
+ * 覆盖范围和距离变换来自 wingCoverField：离无羽区不到 0.08 cm 的地方不画，0.08~0.15 cm 之间渐隐——
+ * 形状自然内缩、边缘圆润，绝不会伸出羽片之外形成直边或折角。
+ */
+export function buildWingPanel(p: BodyParams, side: 1 | -1, placements: Placement[]): BufferGeometry {
+  const cell = PANEL_CELL;
+  const nz = Math.ceil((PANEL_Z0 - PANEL_Z1) / cell) + 1;
+  const ny = Math.ceil((PANEL_Y1 - PANEL_Y0) / cell) + 1;
+  const field = wingCoverField(placements, cell);
+  const dist = new Float32Array(nz * ny);
   for (let i = 0; i < nz; i++) {
-    for (let j = 0; j < ny; j++) {
-      if (!covered[at(i, j)]) continue;
-      let d = dist[at(i, j)];
-      if (i > 0) d = Math.min(d, dist[at(i - 1, j)] + D1);
-      if (j > 0) d = Math.min(d, dist[at(i, j - 1)] + D1);
-      if (i > 0 && j > 0) d = Math.min(d, dist[at(i - 1, j - 1)] + D2);
-      if (i > 0 && j < ny - 1) d = Math.min(d, dist[at(i - 1, j + 1)] + D2);
-      dist[at(i, j)] = d;
-    }
-  }
-  for (let i = nz - 1; i >= 0; i--) {
-    for (let j = ny - 1; j >= 0; j--) {
-      if (!covered[at(i, j)]) continue;
-      let d = dist[at(i, j)];
-      if (i < nz - 1) d = Math.min(d, dist[at(i + 1, j)] + D1);
-      if (j < ny - 1) d = Math.min(d, dist[at(i, j + 1)] + D1);
-      if (i < nz - 1 && j < ny - 1) d = Math.min(d, dist[at(i + 1, j + 1)] + D2);
-      if (i < nz - 1 && j > 0) d = Math.min(d, dist[at(i + 1, j - 1)] + D2);
-      dist[at(i, j)] = d;
-    }
+    for (let j = 0; j < ny; j++) dist[i * ny + j] = field.sample(PANEL_Y0 + j * cell, PANEL_Z0 - i * cell);
   }
 
   const alpha = (d: number): number => smooth(PANEL_INSET, PANEL_INSET + PANEL_FADE, d);
-  const keep = (i: number, j: number): boolean => dist[at(i, j)] > PANEL_INSET;
+  const keep = (i: number, j: number): boolean => dist[i * ny + j] > PANEL_INSET;
 
   // 只在四个角都在内缩范围里的格子上出面，最外一圈的 alpha 正好为 0，边缘是渐隐的
   const pos: number[] = [];
@@ -477,25 +581,25 @@ export function buildWingPanel(p: BodyParams, side: 1 | -1, placements: Placemen
   const vid = new Int32Array(nz * ny).fill(-1);
   const g = [0, 0, 0];
   for (let i = 0; i < nz; i++) {
-    const z = PANEL_Z0 - i * PANEL_CELL;
+    const z = PANEL_Z0 - i * cell;
     for (let j = 0; j < ny; j++) {
       if (!keep(i, j)) continue;
-      const y = PANEL_Y0 + j * PANEL_CELL;
+      const y = PANEL_Y0 + j * cell;
       const x = surfaceHalfWidth(p, y, z) + 0.03;
-      vid[at(i, j)] = pos.length / 3;
+      vid[i * ny + j] = pos.length / 3;
       pos.push(side * x, y, z);
       bodyGradient(side * x, y, z, p, g);
       const gl = Math.hypot(g[0], g[1], g[2]) || 1;
       nrm.push((side * g[0]) / gl, g[1] / gl, g[2] / gl);
-      alp.push(alpha(dist[at(i, j)]));
+      alp.push(alpha(dist[i * ny + j]));
     }
   }
   for (let i = 0; i < nz - 1; i++) {
     for (let j = 0; j < ny - 1; j++) {
-      const a = vid[at(i, j)];
-      const b = vid[at(i + 1, j)];
-      const c = vid[at(i, j + 1)];
-      const d = vid[at(i + 1, j + 1)];
+      const a = vid[i * ny + j];
+      const b = vid[(i + 1) * ny + j];
+      const c = vid[i * ny + j + 1];
+      const d = vid[(i + 1) * ny + j + 1];
       if (a < 0 || b < 0 || c < 0 || d < 0) continue;
       // i 增大 = z 减小（向后），j 增大 = y 增大（向上）：按右手定则决定绕序，右半身朝外
       if (side === 1) idx.push(a, b, c, c, b, d);

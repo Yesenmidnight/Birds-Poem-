@@ -72,7 +72,10 @@ export class FeatherBatch {
   private readonly axis: number[] = [];
   private readonly exp: number[] = [];
   private readonly idx: number[] = [];
+  /** 每片羽的羽根、羽轴方向、长度和它在合并网格里的起始顶点，贴体弯曲时按羽长参数分段用。 */
+  private readonly frames: { root: Vector3; dir: Vector3; len: number; base: number }[] = [];
   private base = 0;
+  private conformed = false;
   count = 0;
 
   add(spec: FeatherSpec, m: Matrix4): void {
@@ -123,6 +126,12 @@ export class FeatherBatch {
     g.applyMatrix4(m);
 
     const axisW = new Vector3(0, 1, 0).transformDirection(m);
+    this.frames.push({
+      root: new Vector3().setFromMatrixPosition(m),
+      dir: axisW.clone(),
+      len: spec.length,
+      base: this.base,
+    });
     const p = g.attributes.position.array as Float32Array;
     const n = g.attributes.normal.array as Float32Array;
     for (let i = 0; i < verts; i++) {
@@ -143,10 +152,43 @@ export class FeatherBatch {
     g.dispose();
   }
 
+  /**
+   * 让每片羽顺着体表弯曲贴合（收拢翅用）：沿羽长按参数 u 取横截面，把整段横截面沿 x 平移到
+   * “体表半宽 + 设计偏移”上——设计偏移由羽根、羽尖各自离体表的高度沿羽长线性过渡给出，
+   * 所以羽片自身的杯度、弓度、叠压关系全都保留，只是不再是一根悬空的直尺弦线。
+   * 体表按每个顶点自己的 (y, z) 取，而不是按羽轴中心线取：叠在一起的两片羽在同一点拿到的是同一个
+   * 体表值，彼此只差设计偏移（0.003~0.005 cm），叠压顺序才不会被体表曲率的微小差别打乱。
+   * surface 为 (y, z) 处的体表半宽；左右翅都按 |x| 处理。
+   */
+  conformToBody(surface: (y: number, z: number) => number): void {
+    for (const f of this.frames) {
+      const verts = (ROWS + 1) * 9;
+      const sign = f.root.x >= 0 ? 1 : -1;
+      const tipY = f.root.y + f.dir.y * f.len;
+      const tipZ = f.root.z + f.dir.z * f.len;
+      const tipX = Math.abs(f.root.x + f.dir.x * f.len);
+      const offRoot = Math.abs(f.root.x) - surface(f.root.y, f.root.z);
+      const offTip = tipX - surface(tipY, tipZ);
+      for (let v = f.base; v < f.base + verts; v++) {
+        const px = this.pos[v * 3];
+        const py = this.pos[v * 3 + 1];
+        const pz = this.pos[v * 3 + 2];
+        const u = Math.min(
+          1,
+          Math.max(0, ((px - f.root.x) * f.dir.x + (py - f.root.y) * f.dir.y + (pz - f.root.z) * f.dir.z) / f.len),
+        );
+        // 顶点相对这一行弦线中心的横向偏差（杯度、弓度、羽面横向），原样保留
+        const cx = Math.abs(f.root.x + f.dir.x * f.len * u);
+        const local = sign * px - cx;
+        this.pos[v * 3] = sign * (surface(py, pz) + offRoot + (offTip - offRoot) * u + local);
+      }
+    }
+    this.conformed = true;
+  }
+
   build(): BufferGeometry {
     const g = new BufferGeometry();
     g.setAttribute('position', new BufferAttribute(new Float32Array(this.pos), 3));
-    g.setAttribute('normal', new BufferAttribute(new Float32Array(this.nrm), 3));
     g.setAttribute('aFrag', new BufferAttribute(new Float32Array(this.frag), 2));
     g.setAttribute('aCol', new BufferAttribute(new Float32Array(this.col), 3));
     g.setAttribute('aPhy', new BufferAttribute(new Float32Array(this.phy), 2));
@@ -156,6 +198,12 @@ export class FeatherBatch {
     g.setAttribute('aAxis', new BufferAttribute(new Float32Array(this.axis), 3));
     g.setAttribute('aExp', new BufferAttribute(new Float32Array(this.exp), 1));
     g.setIndex(this.idx);
+    if (this.conformed) {
+      // 弯曲过，法线按弯曲后的网格重算
+      g.computeVertexNormals();
+    } else {
+      g.setAttribute('normal', new BufferAttribute(new Float32Array(this.nrm), 3));
+    }
     g.computeBoundingSphere();
     return g;
   }

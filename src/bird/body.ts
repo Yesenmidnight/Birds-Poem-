@@ -8,7 +8,17 @@ import {
   type BodyParams,
 } from './bodySdf';
 import { surfaceNets } from './surfaceNets';
-import { clamp, smoothstep } from '../util/math';
+import { wingCoverField, wingPlacements } from './wingTail';
+import { clamp, lerp, smoothstep } from '../util/math';
+
+/**
+ * 翼下压毛范围相对羽片覆盖边缘再往里收的距离（cm）。不能大：覆羽那一排的羽带只有 0.3 cm 宽，
+ * 往里收 0.07 等于整排都不压毛，全长绒毛会把覆羽埋成一个个黑圆点。上缘、前缘外一圈的毛靠下面的
+ * drape 判定保持全长，漫过翅边把翅包住
+ */
+const WING_FUR_INSET = 0.02;
+/** 翅下缘、翅尖以外仍保持短绒的距离（cm，负值 = 从覆盖边缘往外再压这么多）：翅的下缘和尖才干净。 */
+const WING_FUR_UNDER = -0.1;
 
 /**
  * 把躯体距离场变成网格，并给每个顶点算出绒毛着色器需要的一切：
@@ -30,6 +40,8 @@ export function buildBody(params: BodyParams = LONG_TAILED_TIT, cell = 0.055): B
   const t0 = performance.now();
   const net = surfaceNets((x, y, z) => bodySDF(x, y, z, params), min, max, cell);
   const count = net.positions.length / 3;
+  // 翼下压毛的覆盖范围：收拢翅羽片的真实投影（随机种子和 Bird 建翅用的一致）
+  const wingCover = wingCoverField(wingPlacements(params));
 
   const normals = new Float32Array(count * 3);
   const flow = new Float32Array(count * 3);
@@ -168,20 +180,15 @@ export function buildBody(params: BodyParams = LONG_TAILED_TIT, cell = 0.055): B
       const d = Math.hypot(gx - GAPE_D[0] * gt, gy - GAPE_D[1] * gt, gz - GAPE_D[2] * gt);
       furLen *= 1 - 0.35 * (1 - smoothstep(0.015, 0.045, d));
     }
-    // 收拢的翅贴在两胁：翅底下的体表绒毛只压成柔和的短绒（约 0.14），不剃秃——收拢翅的包络面就放在这层短绒
-    // 外侧一点点，抬翅时露出来的是自然的粉白胁下绒毛，不会出现一块灰疤。
-    // 上缘留出过渡，让肩背的玫瑰粉棕绒羽自然垂搭在中覆羽根部上；前缘斜着切（上面从 z≈0 起、下面收到 z≈-0.7），
-    // 让胸侧和两胁前下方的饱满白绒向后上方蓬起，盖住翅的前弯和下前缘
-    const yTop = z >= -1.5 ? 3.2 + 0.1 * z : 3.05 + 0.08 * (z + 1.5);
-    const yBot = z >= -2.6 ? 2.17 + 0.1 * z : 1.91 + 0.27 * (-2.6 - z);
-    const zFront = -0.7 * (3.1 - y);
-    const panel =
-      smoothstep(0.35, 0.6, Math.abs(nx)) *
-      smoothstep(yBot - 0.1, yBot + 0.08, y) *
-      (1 - smoothstep(yTop - 0.08, yTop + 0.14, y)) *
-      (1 - smoothstep(zFront - 0.15, zFront + 0.25, z)) *
-      smoothstep(-3.6, -3.2, z);
-    furLen = furLen * (1 - panel) + 0.14 * panel;
+    // 翼下压毛：严格按收拢翅正羽的真实覆盖范围来（羽片投影 + 距离变换，和翼内底壳同一个场）——
+    // 只有真正被黑翅盖在正下方的柳叶心部才把毛压成柔和短绒，再按边缘朝向决定压毛范围从哪里开始：
+    // 上缘、前缘以外（肩背、胸侧）的毛全长，漫过翅边把翅包住；下缘以外 0.1 cm 内仍是短绒，
+    // 翅的下缘才不会被白毛刷边。过渡带都是 0.15 cm 宽，没有平底凹坑和断崖
+    const cover = wingCover.sample(y, z);
+    const drape = Math.max(smoothstep(-0.1, 0.4, ny), smoothstep(0.3, 0.6, nz));
+    const inset = lerp(WING_FUR_UNDER, WING_FUR_INSET, drape);
+    const panel = smoothstep(0.15, 0.4, Math.abs(nx)) * smoothstep(inset, inset + 0.15, cover);
+    furLen = furLen * (1 - panel) + 0.22 * panel;
     // 腹底靠近腿的位置也短一些
     furLen *= 0.7 + 0.3 * smoothstep(0.35, 0.7, y);
 

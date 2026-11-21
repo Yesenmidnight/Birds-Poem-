@@ -42,6 +42,9 @@ export const VIEWS: Record<string, ViewPreset> = {
   head: { az: -0.75, el: 0.1, dist: 4.6, target: [-0.55, 3.75, 0.05] },
   tail: { az: -0.35, el: 0.3, dist: 13, target: [3.5, 1.6, 0] },
   wide: { az: -0.5, el: 0.2, dist: 28, target: [2, 2, 0] },
+  // 俯视自检：正上方偏后看，头在上、尾在下；斜前上方看翅与肩胸的衔接
+  top: { az: Math.PI / 2 + 0.12, el: 1.18, dist: 10, target: [0.5, 2.4, 0] },
+  topfront: { az: -Math.PI / 2 + 0.55, el: 0.8, dist: 10.5, target: [0.2, 2.5, 0] },
 };
 const VIEW_NAMES = Object.keys(VIEWS);
 
@@ -227,7 +230,7 @@ export class App {
     ];
 
     const vw = p.section('视角');
-    p.segmented(vw, ['四分之三', '侧面', '正面', '背面', '头部', '尾部', '远景'], 0, (i) =>
+    p.segmented(vw, ['四分之三', '侧面', '正面', '背面', '头部', '尾部', '远景', '俯视', '斜俯视'], 0, (i) =>
       this.setView(VIEW_NAMES[i]),
     );
 
