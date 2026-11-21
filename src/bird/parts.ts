@@ -214,6 +214,7 @@ export const LID_GAP_LOWER = Math.asin(-LOWER_MARGIN_Y);
  * 上下眼睑球冠壳。覆盖的是球面上一个平面切割出来的那一半：
  * 平面都过“前后眼角连成的水平线”，上睑切割线在眼面上缘、下睑在下缘，于是围出的睑裂前后收尖、
  * 上缘略平、下缘圆润。壳半径略大于眼球；睑缘那一圈向眼球收拢，形成一点肉质厚度。
+ * 静止睁开时露在外面的只有紧贴眼球的一圈深色细睑缘（aLidR ≲ 0.7r），再往外的壳面埋在眼周白绒毛底下。
  * 几何在眼睛局部坐标系里（原点 = 眼球中心），绕局部 X 轴转动即开合。
  */
 export function buildEyelid(p: BodyParams, upper: boolean): BufferGeometry {
@@ -249,8 +250,8 @@ export function buildEyelid(p: BodyParams, upper: boolean): BufferGeometry {
       const phi = i === 0 ? phiB : phiB + 0.05 + (phiMax - phiB - 0.05) * ((i - 1) / (rings - 1));
       const rr = r * (i === 0 ? rMargin : rShell);
       pos.push(rr * Math.sin(phi) * Math.cos(psi), rr * Math.sin(phi) * Math.sin(psi), rr * Math.cos(phi));
-      // 0 = 睑缘，1 = 睑缘外沿，之后越往外越大（材质据此从眼睑皮肤过渡到贴着眉弓的细短绒羽）
-      lid.push(i === 0 ? 0 : Math.min(1 + (i - 1) / (rings - 1), 2));
+      // 离眼中轴的距离（单位：眼球半径）：0 在睑裂正中，睑缘处约 0.4~0.5，材质据此只给紧贴眼球的一圈染深色睑缘
+      lid.push((rr * Math.sin(phi)) / r);
       if (i < rings && j < segs) {
         const A = j * (rings + 1) + i;
         const B = A + 1;
@@ -262,7 +263,7 @@ export function buildEyelid(p: BodyParams, upper: boolean): BufferGeometry {
   }
   const g = new BufferGeometry();
   g.setAttribute('position', new Float32BufferAttribute(pos, 3));
-  g.setAttribute('aLid', new Float32BufferAttribute(lid, 1));
+  g.setAttribute('aLidR', new Float32BufferAttribute(lid, 1));
   g.setIndex(idx);
   g.computeVertexNormals();
   return g;
@@ -340,8 +341,8 @@ varying vec3 vUpW;
 }
 
 /**
- * 眼睑壳材质：外面整圈就是面部绒羽的白（眼睑上长着细短绒羽，和眼周白毛无缝衔接），
- * 只有紧贴眼球最内圈极细的一线是肉质睑缘——上睑缘一丝暗赭黄，下睑缘深黑褐。
+ * 眼睑壳材质：紧贴眼球的一圈是肉质睑缘——上睑缘一丝暗赭黄、下睑缘深黑褐，往外 0.55r~0.7r 内过渡到
+ * 面部绒羽的白（眼睑上长着细短绒羽，和眼周白毛无缝衔接）；这一圈白壳面埋在眼周绒毛底下，只在眨眼合拢时露出来。
  */
 export function makeLidMaterial(lighting: LightingUniforms, upper: boolean): ShaderMaterial {
   return makeLitMaterial({
@@ -349,22 +350,22 @@ export function makeLidMaterial(lighting: LightingUniforms, upper: boolean): Sha
     side: DoubleSide,
     uniforms: {
       uLidWhite: { value: rgb('#ebe6de') },
-      uLidEdge: { value: rgb(upper ? '#6b5a3a' : '#241c1a') },
+      uLidEdge: { value: rgb(upper ? '#3a2e22' : '#241c1a') },
     },
     vertexPars: /* glsl */ `
-attribute float aLid;
-varying float vLid;
+attribute float aLidR;
+varying float vLidR;
 `,
     vertexMain: /* glsl */ `
-	vLid = aLid;
+	vLidR = aLidR;
 `,
     fragmentPars: /* glsl */ `
 uniform vec3 uLidWhite;
 uniform vec3 uLidEdge;
-varying float vLid;
+varying float vLidR;
 `,
     surface: /* glsl */ `
-	float band = 1.0 - smoothstep( 0.0, 1.0, vLid );
+	float band = 1.0 - smoothstep( 0.52, 0.68, vLidR );
 	// 绒羽白带一点细碎的明暗，和旁边壳层绒毛的质感接得上
 	vec3 dome = uLidWhite * ( 0.94 + 0.12 * ( snoise( vWorldPos * 90.0 ) * 0.5 + 0.5 ) );
 	Surf s;

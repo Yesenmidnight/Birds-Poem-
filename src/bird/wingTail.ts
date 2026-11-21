@@ -9,7 +9,7 @@ import { FeatherBatch, featherMatrix, mirrorMatrix, type FeatherColorFn, type Fe
  * 这样羽色里的“前缘 / 后缘 / 外侧”在两侧都保持解剖学上正确的位置。
  *
  * 肩背的玫瑰粉棕不是正羽而是绒羽，由 plumage.ts 画在躯体绒毛层里；这里是收拢的翅
- * （覆羽、次级/三级飞羽、初级飞羽，暖炭黑底 + 奶油白细羽缘 + 一道大覆羽白翼斑）和长尾羽。
+ * （覆羽、次级/三级飞羽、初级飞羽，暖炭黑底 + 后半段奶油白细羽缘）和长尾羽。
  */
 type V3 = [number, number, number];
 
@@ -22,10 +22,11 @@ const WHITE = rgb('#f0e9dc');
 const mix = (a: Color, b: Color, t: number): Color => a.clone().lerp(b, clamp(t, 0, 1));
 
 /**
- * 大覆羽：黑，羽尖一截奶油白。8 片宽而柔边的羽片顺翅长叠瓦，露在外面的正好是最后那一截；
- * 黑白过渡拉得柔、白度压到八成，连起来是一道柔和的浅色翼斑，不是一排颗粒分明的白点
+ * 大覆羽：和中覆羽一样是纯深炭黑褐——北长尾山雀没有大山雀那种横穿翅膀的白色大覆羽翼斑，
+ * 翅上的白只来自后半段三级/次级飞羽顺翅长向后收束的纵向羽缘。
+ * 羽尖只带一丝几乎看不见的暖灰褐，让叠瓦层次读得出来，不再是一排白麻将牌
  */
-const covert: FeatherColorFn = (_a, along) => mix(BLACK, WHITE, smooth(0.3, 0.66, along) * 0.8);
+const covert: FeatherColorFn = (_a, along) => mix(BLACK, BLACK_SOFT, smooth(0.5, 1.0, along) * 0.45);
 /** 中覆羽、初级覆羽：纯黑——侧面只读出大覆羽那一道翼斑。 */
 const covertSmall: FeatherColorFn = () => BLACK;
 /** 次级飞羽：黑，下缘一条奶油白细羽缘。 */
@@ -278,8 +279,11 @@ function widthProfile(v: number, tipPos: number, tipPow: number): number {
 
 const UP = new Vector3(0, 1, 0);
 
-/** 翅根枢轴（鸟局部坐标，右翅；左翅镜像）。翅膀绕它抬落、前后扫、翻转。 */
-export const WING_PIVOT = new Vector3(0.9, 2.8, -0.6);
+/**
+ * 翅根枢轴（鸟局部坐标，右翅；左翅镜像）= 肩关节，放在收拢翅的上缘。
+ * 翅膀绕它抬落、前后扫、翻转：大幅弹翅时整片翅从肩头往外张开，肩部的覆羽不会反过来压进体表绒毛里
+ */
+export const WING_PIVOT = new Vector3(0.9, 3.12, -0.6);
 
 /** 一片羽在侧面 (y, z) 上的投影，翼面底板用它算羽片的覆盖范围。 */
 interface Placement {

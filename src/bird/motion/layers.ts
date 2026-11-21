@@ -25,6 +25,8 @@ export interface MotionEvents {
   /** 最近一次跳视的角幅度（弧度）。 */
   lastSaccadeMagnitude: number;
   tiltEnds: number;
+  tailFlicks: number;
+  wingFlicks: number;
 }
 
 export abstract class MotionLayer {
@@ -263,7 +265,8 @@ export class BlinkLayer extends MotionLayer {
 
 /**
  * 甩尾 + 弹翅：每隔几秒长尾快速上翘并微扇一瞬（欠阻尼弹簧回落），
- * 时而伴随双翅往背上方 90~130 ms 的轻弹；大转头、歪头回正之后更容易来一下。
+ * 时而伴随双翅从肩头往背上方 90~130 ms 的大幅轻弹（下缘张开、翅尖上挑、微微展开）；
+ * 大转头、歪头回正之后更容易来一下。
  */
 export class FidgetLayer extends MotionLayer {
   private next = 2.5;
@@ -272,26 +275,28 @@ export class FidgetLayer extends MotionLayer {
   private tailAmp = 0.35;
   private tailYaw = 0;
   private wingT = Infinity;
-  private wingAmp = 0.3;
+  private wingAmp = 0.65;
   private seenSaccades = 0;
   private seenTiltEnds = 0;
 
-  cueTail(ctx: MotionContext): void {
+  cueTail(ctx: MotionContext, events: MotionEvents): void {
     this.tailT = 0;
     this.tailAmp = lerp(0.28, 0.45, ctx.rng());
     this.tailYaw = ctx.rng() < 0.4 ? (ctx.rng() - 0.5) * 0.2 : 0;
+    events.tailFlicks++;
   }
 
-  cueWing(ctx: MotionContext): void {
+  cueWing(ctx: MotionContext, events: MotionEvents): void {
     this.wingT = 0;
-    this.wingAmp = lerp(0.26, 0.36, ctx.rng());
+    this.wingAmp = lerp(0.55, 0.8, ctx.rng());
+    events.wingFlicks++;
   }
 
   update(dt: number, ctx: MotionContext, pose: Pose, events: MotionEvents): void {
     this.next -= dt;
     if (this.next <= 0) {
-      this.cueTail(ctx);
-      if (ctx.rng() < lerp(0.3, 0.5, ctx.activity)) this.cueWing(ctx);
+      this.cueTail(ctx, events);
+      if (ctx.rng() < lerp(0.3, 0.5, ctx.activity)) this.cueWing(ctx, events);
       this.next = lerp(1.6, 5.5, ctx.rng()) * lerp(1.15, 0.7, ctx.activity);
     }
     // 大转头 / 歪头回正后，延迟一点再甩，像是"看完了准备换姿态"
@@ -304,8 +309,8 @@ export class FidgetLayer extends MotionLayer {
       if (ctx.rng() < 0.25) this.pending = ctx.time + lerp(0.1, 0.25, ctx.rng());
     }
     if (this.pending !== null && ctx.time >= this.pending) {
-      this.cueTail(ctx);
-      if (ctx.rng() < 0.5) this.cueWing(ctx);
+      this.cueTail(ctx, events);
+      if (ctx.rng() < 0.5) this.cueWing(ctx, events);
       this.pending = null;
     }
 
@@ -319,14 +324,55 @@ export class FidgetLayer extends MotionLayer {
     }
     if (this.wingT < Infinity) {
       this.wingT += dt;
-      // 翅尖往上背方向轻弹（twist），翅下缘微微张开（lift），立刻收拢。
-      // rebound 取 0：翅只往上、不压回体表以内——翼下绒毛只比羽片矮一点点，往里压一丝就会从黑羽上冒出来
+      // 翅绕肩关节整片往外张开（lift 0.55~0.8 rad），翅尖往背上方挑（twist），翅尖微微向外展（sweep），
+      // 90~130 ms 干脆收拢。rebound 取 0：翅只往上、不压回体表以内——翼下绒毛只比羽片矮一点点，
+      // 往里压一丝就会从黑羽上冒出来
       const f = flick(this.wingT, 0.045, 0.07, 0);
       for (const side of ['left', 'right'] as const) {
-        pose.wing[side].twist += 0.22 * this.wingAmp * f;
         pose.wing[side].lift += this.wingAmp * f;
+        pose.wing[side].twist += 0.12 * f;
+        pose.wing[side].sweep -= 0.18 * f;
       }
       if (this.wingT > 0.3) this.wingT = Infinity;
+    }
+  }
+}
+
+/**
+ * 扭扭身子（躯干重心联动）：大角度跳视转头时身体顺着转头方向柔和弹簧滞后跟随 15%~22%；
+ * 甩尾、弹翅时身体前俯微蹲反冲一下再弹簧回稳。躯干绕脚踝抓握点转，双脚始终抓牢树枝。
+ */
+export class SwayLayer extends MotionLayer {
+  private yaw = 0;
+  private yawVel = 0;
+  private pitchT = Infinity;
+  private pitchAmp = 0.06;
+  private seenTail = 0;
+  private seenWing = 0;
+
+  update(dt: number, ctx: MotionContext, pose: Pose, events: MotionEvents): void {
+    // 跟随转头：欠阻尼弹簧（周期 0.4 s、阻尼比 0.75）半隐式积分，身体比头慢半拍
+    const target = pose.head.yaw * lerp(0.15, 0.22, ctx.activity);
+    const w = TAU / 0.4;
+    this.yawVel += (-w * w * (this.yaw - target) - 1.5 * w * this.yawVel) * dt;
+    this.yaw += this.yawVel * dt;
+    pose.body.yaw += this.yaw;
+
+    // 甩尾 / 弹翅的反冲：前俯一下再弹回（弹翅幅度更大一些）
+    if (events.tailFlicks !== this.seenTail) {
+      this.seenTail = events.tailFlicks;
+      this.pitchT = 0;
+      this.pitchAmp = lerp(0.04, 0.07, ctx.rng());
+    }
+    if (events.wingFlicks !== this.seenWing) {
+      this.seenWing = events.wingFlicks;
+      this.pitchT = 0;
+      this.pitchAmp = lerp(0.08, 0.12, ctx.rng());
+    }
+    if (this.pitchT < Infinity) {
+      this.pitchT += dt;
+      pose.body.pitch += this.pitchAmp * spring(this.pitchT, 0.3, 0.45);
+      if (this.pitchT > 0.8) this.pitchT = Infinity;
     }
   }
 }

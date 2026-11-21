@@ -138,12 +138,13 @@ export function buildBody(params: BodyParams = LONG_TAILED_TIT, cell = 0.055): B
     let furLen = 1.0 + 0.12 * wHead * (1 - smoothstep(0.35, 0.8, ny)) + 0.06 * wChest;
     // 背上短一截，从后颈往头顶逐渐放长，颈背交界处不留一道棱
     furLen -= 0.16 * smoothstep(0.0, 0.6, ny) * (1 - smoothstep(2.75, 3.4, y)) * (1 - smoothstep(-0.3, 0.3, z));
-    // 眼周只在眼睑壳那一圈压秃：下眼圈露出一线眼睑壳，眉弓的白绒则直接压到上睑缘；
-    // 往外渐次放长，贴着眼圈的毛是短的，不会立成一圈睫毛
+    // 眼周只在紧贴睑裂的那一圈压秃，毛从睑缘外一点点就放长：露出来的眼睑壳只剩一线深色细睑缘，
+    // 壳外沿整圈埋进眼周白绒毛底下，微距下不会看到一圈光滑的白色实心环；
+    // 压秃半径仍略大于睑缘（上 0.52r、下 0.5r），贴着眼圈的毛不会立成一圈睫毛
     const eyeCy = params.head.c[1] + params.eyeDir[1] * params.eyeOffset;
     const brow = smoothstep(-0.06 * er, 0.44 * er, y - eyeCy);
-    const lidR = er * (0.65 - 0.2 * brow);
-    furLen *= 1 - 0.95 * (1 - smoothstep(lidR, lidR + er * 0.6, eyeD));
+    const lidR = er * (0.55 - 0.05 * brow);
+    furLen *= 1 - 0.95 * (1 - smoothstep(lidR, lidR + er * 0.45, eyeD));
     // 嘴根附近绒毛略短；喙壳底下的体表彻底压住，毛尖不会从黑喙里钻出来
     const beakD = Math.hypot(x - bx, y - by, z - bz);
     furLen *= 0.55 + 0.45 * smoothstep(0.15, 0.45, beakD);
@@ -185,10 +186,13 @@ export function buildBody(params: BodyParams = LONG_TAILED_TIT, cell = 0.055): B
     furLen *= 0.7 + 0.3 * smoothstep(0.35, 0.7, y);
 
     // ---- 骨骼权重：头、颈两根骨骼，其余归身体 ----
-    const dh = nd[0];
-    const wHeadBone = 1 - smoothstep(1.0, 1.42, dh);
-    const wNeckBone =
-      (1 - wHeadBone) * smoothstep(0.95, 1.2, dh) * (1 - smoothstep(1.35, 1.95, dh));
+    // 头部（眼眶、前脸、嘴根、头顶）必须 100% 跟头骨刚体走：刚体的眼球和上下喙是整组跟 mHead 转的，
+    // 体表若只跟一半，大角度转头时眼球就会滑出眼窝、露出一块深色皮肤。
+    // 所以按高度划分而不是按离头心的距离（smin 之后前脸的 dh 反而比脖子大，按 dh 分会把前脸判成脖子）：
+    // y ≥ 3.2 全是头骨，线性混合过渡区压在脖子 y≈2.75~3.2，再往下归颈骨、身体
+    const tHead = smoothstep(2.75, 3.2, y);
+    const wHeadBone = tHead;
+    const wNeckBone = (1 - tHead) * smoothstep(2.25, 2.75, y);
     weights.set([wNeckBone, wHeadBone], i * 2);
 
     // aParam：毛长系数、逐顶点随机数、离眼中轴线的距离（着色器据此画眼睑里的深色皮肤）

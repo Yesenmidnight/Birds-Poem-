@@ -1,7 +1,7 @@
 import { Quaternion, Vector3 } from 'three';
 import { makeRng } from '../../util/math';
 import { DEG } from './curves';
-import { BlinkLayer, BreathLayer, FidgetLayer, GazeLayer, type MotionContext, type MotionEvents, type MotionLayer } from './layers';
+import { BlinkLayer, BreathLayer, FidgetLayer, GazeLayer, SwayLayer, type MotionContext, type MotionEvents, type MotionLayer } from './layers';
 import { resetPose, restPose, type Pose } from './Pose';
 
 /** 每帧由 App 提供的外部环境。 */
@@ -16,8 +16,8 @@ export interface MotionFrame {
 export type MotionCue = 'saccade' | 'tilt' | 'blink' | 'nict' | 'tailFlick' | 'wingFlick';
 
 /**
- * 微生命动作系统：呼吸、跳视/歪头、眨眼/瞬膜、甩尾/弹翅各自是一个独立的层，
- * 互不依赖，只通过跨层事件（跳视次数、歪头结束）松耦合；所有层写进同一个 Pose，
+ * 微生命动作系统：呼吸、跳视/歪头、眨眼/瞬膜、甩尾/弹翅、扭身各自是一个独立的层，
+ * 互不依赖，只通过跨层事件（跳视次数、歪头结束、甩尾/弹翅次数）松耦合；所有层写进同一个 Pose，
  * 再由 Bird.applyPose 统一驱动。节奏与幅度由活跃度统一调节。
  */
 export class MotionController {
@@ -29,11 +29,12 @@ export class MotionController {
   paused = false;
 
   readonly pose: Pose = restPose();
-  readonly events: MotionEvents = { saccades: 0, lastSaccadeMagnitude: 0, tiltEnds: 0 };
+  readonly events: MotionEvents = { saccades: 0, lastSaccadeMagnitude: 0, tiltEnds: 0, tailFlicks: 0, wingFlicks: 0 };
   readonly breath = new BreathLayer();
   readonly gaze = new GazeLayer();
   readonly blink = new BlinkLayer();
   readonly fidget = new FidgetLayer();
+  readonly sway = new SwayLayer();
 
   private readonly layers: MotionLayer[];
   private readonly rng = makeRng(20261122);
@@ -48,7 +49,8 @@ export class MotionController {
   };
 
   constructor() {
-    this.layers = [this.breath, this.gaze, this.blink, this.fidget];
+    // 扭身层放在最后：它读这一帧已经叠加好的头部转角和甩尾/弹翅事件
+    this.layers = [this.breath, this.gaze, this.blink, this.fidget, this.sway];
   }
 
   /** 每帧调用：推进时间并重新叠加出这一帧的 Pose。 */
@@ -88,10 +90,10 @@ export class MotionController {
         this.blink.cueNict();
         break;
       case 'tailFlick':
-        this.fidget.cueTail(this.ctx);
+        this.fidget.cueTail(this.ctx, this.events);
         break;
       case 'wingFlick':
-        this.fidget.cueWing(this.ctx);
+        this.fidget.cueWing(this.ctx, this.events);
         break;
     }
   }

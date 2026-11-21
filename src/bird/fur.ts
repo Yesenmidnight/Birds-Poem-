@@ -77,9 +77,10 @@ uniform float uRandom;
 uniform vec4 uStroke[3];
 uniform vec3 uStrokeDir[3];
 uniform float uStrokeAge[3];
-varying vec3 vPos;
-varying vec3 vNO;
-varying vec3 vFlowO;
+// 蒙皮前的静止局部坐标：色斑、毛簇、毛长起伏都按它采样，才能牢牢长在皮肤上跟着头一起转
+varying vec3 vRestPos;
+varying vec3 vRestN;
+varying vec3 vRestFlow;
 varying vec3 vParam;
 varying float vT;
 varying float vClump;
@@ -101,23 +102,26 @@ const FUR_VERTEX_MAIN = /* glsl */ `
 		float t = aLayer / max( uShellCount - 1.0, 1.0 );
 	#endif
 
+	// 所有噪声都按蒙皮前的静止坐标 position 采样（绝不用 base）：头一转，静态噪声场若按蒙皮后的位置采样，
+	// 就会在皮肤上“游移”——脸颊白毛撞进静止的口腔暗区染成黑胡子，毛簇也会随着转头重新排列
 	// 羽片叠瓦：绒毛长度随位置缓慢起伏，轮廓才有“一层层羽毛”的起伏感。
-	// 起伏只看空间坐标 base，相邻顶点才会连续——绝不能混进逐顶点的随机数
-	float sc = snoise( base * uScallop );
+	// 起伏只看空间坐标，相邻顶点才会连续——绝不能混进逐顶点的随机数
+	float sc = snoise( position * uScallop );
 	float clumpAmt = sc * 0.5 + 0.5;
 	float len = uFurLen * aParam.x * ( 0.72 + 0.56 * clumpAmt ) * mix( 0.78, 1.32, uFluff );
 	// 毛长的细碎起伏同样是空间连续的低频噪声
-	len *= 0.82 + 0.36 * ( snoise( base * 5.0 + 3.1 ) * 0.5 + 0.5 );
+	len *= 0.82 + 0.36 * ( snoise( position * 5.0 + 3.1 ) * 0.5 + 0.5 );
 
-	// 毛簇：相干噪声让相邻的毛聚成一缕。频率压到网格单元以上，方向场在顶点之间才是平滑的
+	// 毛簇：相干噪声让相邻的毛聚成一缕。频率压到网格单元以上，方向场在顶点之间才是平滑的。
+	// 噪声在静止坐标里取样后再用蒙皮矩阵转过来，毛缕的方向跟着皮肤一起转
 	float cs = uTuftScale * 0.4;
-	vec3 cn = vec3(
-		snoise( base * cs + 31.7 ),
-		snoise( base * cs + 7.3 ),
-		snoise( base * cs + 19.1 ) );
+	vec3 cn = mat3( sk ) * vec3(
+		snoise( position * cs + 31.7 ),
+		snoise( position * cs + 7.3 ),
+		snoise( position * cs + 19.1 ) );
 	vec3 clump = cn - nL * dot( cn, nL );
 
-	// 抚摸：靠近划过位置的毛顺着划动方向倒伏
+	// 抚摸：靠近划过位置的毛顺着划动方向倒伏（划动位置是当前鸟局部坐标，所以这里用 base）
 	vec3 pet = vec3( 0.0 );
 	float petW = 0.0;
 	for ( int i = 0; i < 3; i ++ ) {
@@ -130,10 +134,10 @@ const FUR_VERTEX_MAIN = /* glsl */ `
 	petW = clamp( petW, 0.0, 1.0 );
 
 	// 微方向扰动：低频、空间连续的波动，像梳过的毛流里轻微起伏的波浪，而不是逐顶点乱扯
-	vec3 rn = vec3(
-		snoise( base * 4.0 + 11.0 ),
-		snoise( base * 4.0 + 23.0 ),
-		snoise( base * 4.0 + 37.0 ) );
+	vec3 rn = mat3( sk ) * vec3(
+		snoise( position * 4.0 + 11.0 ),
+		snoise( position * 4.0 + 23.0 ),
+		snoise( position * 4.0 + 37.0 ) );
 	rn -= nL * dot( rn, nL );
 	vec3 T = fL + clump * uClump + rn * uRandom + pet * 2.5;
 	T = T - nL * dot( T, nL );
@@ -162,9 +166,9 @@ const FUR_VERTEX_MAIN = /* glsl */ `
 	float phi = phiTip * smoothstep( bendStart, 1.0, t );
 	nrm = normalize( nL * cos( phi ) + T * sin( phi ) * 0.45 );
 
-	vPos = base;
-	vNO = nL;
-	vFlowO = fL;
+	vRestPos = position;
+	vRestN = normal;
+	vRestFlow = aFlow;
 	vParam = aParam;
 	vT = t;
 	vClump = clumpAmt;
@@ -178,9 +182,9 @@ uniform float uStretch;
 uniform float uDensity;
 uniform float uSheen;
 uniform float uTranslucency;
-varying vec3 vPos;
-varying vec3 vNO;
-varying vec3 vFlowO;
+varying vec3 vRestPos;
+varying vec3 vRestN;
+varying vec3 vRestFlow;
 varying vec3 vParam;
 varying float vT;
 varying float vClump;
@@ -192,9 +196,9 @@ const FUR_SURFACE = /* glsl */ `
 		float alpha = 1.0;
 	#else
 		// 毛簇图样：在毛流方向上高度拉伸噪声，裁出来的是顺着毛流拉长的细丝缕而不是圆疙瘩；
-		// 毛尖处阈值更高，所以只有最密的毛缕能长到外层
-		vec3 fO = normalize( vFlowO );
-		vec3 q = vPos - fO * dot( vPos, fO ) * uStretch;
+		// 毛尖处阈值更高，所以只有最密的毛缕能长到外层。采样同样在静止坐标里做，毛缕才不会随转头游移
+		vec3 fO = normalize( vRestFlow );
+		vec3 q = vRestPos - fO * dot( vRestPos, fO ) * uStretch;
 		float d1 = fbm3( q * uTuftScale );
 		float d2 = snoise( q * uTuftScale * 2.7 + 41.0 ) * 0.5 + 0.5;
 		float dens = d1 * 0.68 + d2 * 0.32;
@@ -210,8 +214,8 @@ const FUR_SURFACE = /* glsl */ `
 	#endif
 	Surf s;
 	s.alpha = alpha;
-	// 明暗的细碎起伏也只看空间坐标，保持连续
-	s.albedo = plumage( vPos, normalize( vNO ), vParam.z ) * ( 0.94 + 0.12 * ( snoise( vPos * 9.0 ) * 0.5 + 0.5 ) );
+	// 明暗的细碎起伏也只看空间坐标，保持连续。羽色按静止坐标算：口腔暗区、口角线、眼圈皮肤都写死在静止坐标里
+	s.albedo = plumage( vRestPos, normalize( vRestN ), vParam.z ) * ( 0.94 + 0.12 * ( snoise( vRestPos * 9.0 ) * 0.5 + 0.5 ) );
 	// 簇与簇之间的凹处更暗一点
 	s.ao = mix( 0.42, 1.0, pow( vT, 0.55 ) ) * ( 0.7 + 0.3 * vClump );
 	s.wrap = 0.55;

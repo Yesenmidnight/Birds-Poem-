@@ -5,6 +5,13 @@ import type { TailPose, WingPose } from '../Bird';
  * 角度全是弧度；闭睑、瞬膜、呼吸是 0..1 的量。动作层只往里加（眼睑取最大），互不感知，
  * 节奏与幅度由 MotionController 按活跃度统一调节。
  */
+/** 躯干微姿态（弧度）：绕脚踝抓握点转，双脚始终抓牢树枝；pitch 前俯为正，yaw 与头同一方向。 */
+export interface BodyPose {
+  pitch: number;
+  yaw: number;
+  roll: number;
+}
+
 export interface Pose {
   head: { yaw: number; pitch: number; roll: number };
   /** 闭睑 0..1、眯眼 0..1、瞬膜扫过 0..1 */
@@ -15,6 +22,7 @@ export interface Pose {
   tail: Required<TailPose>;
   /** 吸气量 0..1，驱动胸腹微膨胀 */
   breath: number;
+  body: BodyPose;
 }
 
 export function restPose(): Pose {
@@ -28,6 +36,7 @@ export function restPose(): Pose {
     },
     tail: { pitch: 0, yaw: 0, roll: 0, spread: 0 },
     breath: 0,
+    body: { pitch: 0, yaw: 0, roll: 0 },
   };
 }
 
@@ -43,4 +52,5 @@ export function resetPose(p: Pose): void {
   }
   p.tail.pitch = p.tail.yaw = p.tail.roll = p.tail.spread = 0;
   p.breath = 0;
+  p.body.pitch = p.body.yaw = p.body.roll = 0;
 }

@@ -166,7 +166,8 @@ export class App {
   /** 微生命动作：算出这一帧的 Pose 并应用到鸟身上（总开关关闭时不应用）。 */
   private updateMotion(dt: number): void {
     const m = this.motion;
-    this.bird.group.getWorldQuaternion(this.birdQuat);
+    // 头颈姿态相对躯干定义，注视目标按躯干当前朝向反算（扭身时头才不会盯着错的方向）
+    this.bird.bodyWorldQuaternion(this.birdQuat);
     this.birdInvQuat.copy(this.birdQuat).invert();
     this.bird.headWorldPosition(this.headWorld);
     let gaze: Vector3 | null = null;

@@ -32,7 +32,7 @@ import {
   type Perch,
 } from './parts';
 import { clamp, lerp } from '../util/math';
-import type { Pose } from './motion/Pose';
+import { type BodyPose, type Pose } from './motion/Pose';
 
 export type BirdPart = 'fur' | 'feathers' | 'beak' | 'eyes' | 'legs';
 
@@ -40,6 +40,8 @@ export type BirdPart = 'fur' | 'feathers' | 'beak' | 'eyes' | 'legs';
 const BREATH_CENTER = new Vector3(0, 1.85, -0.5);
 /** 吸满气时的纵向膨胀比例。 */
 const BREATH_SCALE = 0.015;
+/** 躯干微姿态绕这个点转：双脚在枝上的抓握点，这样脚始终抓牢树枝、不悬空滑移。 */
+const BODY_PIVOT = new Vector3(0, 0, 0.05);
 
 /**
  * 眨眼：lidClose 为合拢程度 0..1（下睑上抬约 70%、上睑下压约 30%）；
@@ -85,8 +87,10 @@ export class Bird {
   readonly params: BodyParams;
 
   private readonly parts: Record<BirdPart, { objs: Object3D[]; on: boolean }>;
-  // 呼吸空间：绒毛、喙眼、翅、尾都挂在这里，跟着胸腹一起微膨胀（腿不膨胀）
+  // 呼吸空间：绒毛、喙眼、翅、尾都挂在这里，跟着胸腹一起微膨胀、跟着躯干微姿态一起绕抓握点转（腿不动）
   private readonly breathSpace = new Group();
+  private breathAmount = 0;
+  private readonly bodyEuler = new Euler();
   // 喙和眼是刚体，整组跟着头部骨骼的矩阵走
   private readonly headParts = new Group();
   private readonly jawUpper = new Group();
@@ -241,15 +245,34 @@ export class Bird {
    * 绒毛、喙眼和翅尾一起被顶起，腿不受影响。
    */
   setBreath(amount: number): void {
-    const s = BREATH_SCALE * clamp(amount, 0, 1.5);
-    const c = BREATH_CENTER;
+    this.breathAmount = amount;
+    this.updateBodySpace();
+  }
+
+  /**
+   * 躯干微姿态（弧度）：整副身体绕脚踝抓握点前俯 / 顺扭 / 侧倾，腿不跟着动，双脚始终抓牢树枝。
+   * 大角度转头时身体顺着方向慢半拍跟一点，甩尾弹翅时前俯反冲再回稳。
+   */
+  setBodyPose(pose: BodyPose): void {
+    this.bodyEuler.set(pose.pitch, pose.yaw, pose.roll, 'YXZ');
+    this.updateBodySpace();
+  }
+
+  /** 呼吸缩放 × 躯干微姿态合成到呼吸空间的矩阵上：先绕腹中心膨胀，再绕抓握点转。 */
+  private updateBodySpace(): void {
+    const s = BREATH_SCALE * clamp(this.breathAmount, 0, 1.5);
     const m = this.breathSpace.matrix;
     m.makeScale(1 + 0.6 * s, 1 + s, 1 + 0.3 * s);
-    m.setPosition(c.x * -0.6 * s, c.y * -s, c.z * -0.3 * s);
+    m.setPosition(BREATH_CENTER.x * -0.6 * s, BREATH_CENTER.y * -s, BREATH_CENTER.z * -0.3 * s);
+    this.quat.setFromEuler(this.bodyEuler);
+    this.rot.makeRotationFromQuaternion(this.quat);
+    this.rot.setPosition(BODY_PIVOT.x, BODY_PIVOT.y, BODY_PIVOT.z);
+    this.rot.multiply(this.shift.makeTranslation(-BODY_PIVOT.x, -BODY_PIVOT.y, -BODY_PIVOT.z));
+    m.premultiply(this.rot);
     this.breathSpace.matrixWorldNeedsUpdate = true;
   }
 
-  /** 把动作系统叠加好的姿态一次性应用到头颈、眼睑、喙、双翅、尾和呼吸。 */
+  /** 把动作系统叠加好的姿态一次性应用到头颈、眼睑、喙、双翅、尾、呼吸和躯干。 */
   applyPose(pose: Pose): void {
     this.setHeadPose(pose.head.yaw, pose.head.pitch, pose.head.roll);
     this.setBlink({ lidClose: pose.eye.lidClose, squint: pose.eye.squint, nictClose: pose.eye.nict });
@@ -258,11 +281,17 @@ export class Bird {
     this.setWingPose('right', pose.wing.right);
     this.setTailPose(pose.tail);
     this.setBreath(pose.breath);
+    this.setBodyPose(pose.body);
   }
 
   /** 眼睛高度处的头部世界坐标，动作系统换算注视角用。 */
   headWorldPosition(out: Vector3): Vector3 {
     return this.headParts.localToWorld(out.set(0, 3.45, 0.8));
+  }
+
+  /** 躯干当前朝向（世界）：头颈姿态是相对躯干定义的，注视角要按这个坐标系反算。 */
+  bodyWorldQuaternion(out: Quaternion): Quaternion {
+    return this.breathSpace.getWorldQuaternion(out);
   }
 
   /**
