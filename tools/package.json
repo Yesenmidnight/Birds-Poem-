@@ -1,0 +1,9 @@
+{
+  "name": "3dbirds-tools",
+  "private": true,
+  "type": "module",
+  "description": "开发用截图工具，不属于运行时依赖",
+  "dependencies": {
+    "playwright-core": "^1.65.0"
+  }
+}

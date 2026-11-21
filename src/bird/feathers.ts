@@ -1,0 +1,251 @@
+import {
+  BufferAttribute,
+  BufferGeometry,
+  Color,
+  DoubleSide,
+  Matrix4,
+  Vector3,
+  type ShaderMaterial,
+} from 'three';
+import { makeLitMaterial, type LightingUniforms } from '../glsl/lit';
+
+/**
+ * 正羽（飞羽、覆羽、尾羽）：一片羽毛是一张带弧度、带扭转的窄带网格，
+ * 宽度沿羽轴按“基部收窄 → 中段最宽 → 端部收尖”的剖面变化，两缘不对称（飞羽的外缘更窄）。
+ * 羽小枝的斜纹、羽轴、羽缘磨损全部在片元着色器里按物理坐标现算。
+ */
+export type FeatherColorFn = (across: number, along: number) => Color;
+
+export interface FeatherSpec {
+  length: number;
+  /** 羽片全宽。 */
+  width: number;
+  /** 前缘（窄的一侧）占全宽的比例，0.5 为左右对称。 */
+  asym: number;
+  /** 基部裸露羽轴所占长度比例。 */
+  bare: number;
+  /** 最宽处位置（0..1）。 */
+  tipPos: number;
+  /** 端部收尖的指数，越大越尖，小于 1 则偏圆。 */
+  tipPow: number;
+  /** 横向凹弧深度。 */
+  cup: number;
+  /** 沿长度方向的弯曲。 */
+  bow: number;
+  /** 沿长度方向的扭转（弧度）。 */
+  twist: number;
+  color: FeatherColorFn;
+}
+
+/** 横向 9 列（中线两侧各 4 列），靠外缘更密一些以便弯出弧度。 */
+const COLS = [1, 0.75, 0.5, 0.25, 0, 0.25, 0.5, 0.75, 1];
+const ROWS = 18;
+
+function widthProfile(v: number, tipPos: number, tipPow: number): number {
+  const w =
+    v < tipPos
+      ? Math.pow(Math.sin((v / tipPos) * Math.PI * 0.5), 0.6)
+      : Math.pow(Math.cos(((v - tipPos) / (1 - tipPos)) * Math.PI * 0.5), tipPow);
+  return Math.max(w, 0.012);
+}
+
+/** 把一批羽毛合并进一张网格，一次绘制。 */
+export class FeatherBatch {
+  private readonly pos: number[] = [];
+  private readonly nrm: number[] = [];
+  private readonly frag: number[] = [];
+  private readonly col: number[] = [];
+  private readonly phy: number[] = [];
+  private readonly size: number[] = [];
+  private readonly axis: number[] = [];
+  private readonly idx: number[] = [];
+  private base = 0;
+  count = 0;
+
+  add(spec: FeatherSpec, m: Matrix4): void {
+    const verts = (ROWS + 1) * 9;
+    const local = new Float32Array(verts * 3);
+    const frag = new Float32Array(verts * 2);
+    const phy = new Float32Array(verts * 2);
+    const col = new Float32Array(verts * 3);
+    const halfLead = spec.width * spec.asym;
+    const halfTrail = spec.width * (1 - spec.asym);
+
+    for (let i = 0; i <= ROWS; i++) {
+      const u = spec.bare + (1 - spec.bare) * (i / ROWS);
+      const w = widthProfile((u - spec.bare) / (1 - spec.bare), spec.tipPos, spec.tipPow);
+      for (let c = 0; c < 9; c++) {
+        const side = c < 4 ? -1 : c > 4 ? 1 : 0;
+        const f = COLS[c];
+        const half = side < 0 ? halfLead : halfTrail;
+        const x = side * half * w * f;
+        const y = u * spec.length;
+        const z0 = spec.cup * f * f * half * w + spec.bow * spec.length * u * u;
+        const a = spec.twist * u;
+        const k = (i * 9 + c) * 3;
+        local[k] = x * Math.cos(a) - z0 * Math.sin(a);
+        local[k + 1] = y;
+        local[k + 2] = x * Math.sin(a) + z0 * Math.cos(a);
+        frag.set([side * f, u], (i * 9 + c) * 2);
+        phy.set([x, y], (i * 9 + c) * 2);
+        const color = spec.color(side * f, u);
+        col.set([color.r, color.g, color.b], k);
+      }
+    }
+
+    const g = new BufferGeometry();
+    g.setAttribute('position', new BufferAttribute(local, 3));
+    const index: number[] = [];
+    for (let i = 0; i < ROWS; i++) {
+      for (let c = 0; c < 8; c++) {
+        const a = i * 9 + c;
+        const b = a + 1;
+        const d = a + 9;
+        const e = d + 1;
+        index.push(a, b, d, b, e, d);
+      }
+    }
+    g.setIndex(index);
+    g.computeVertexNormals();
+    g.applyMatrix4(m);
+
+    const axisW = new Vector3(0, 1, 0).transformDirection(m);
+    const p = g.attributes.position.array as Float32Array;
+    const n = g.attributes.normal.array as Float32Array;
+    for (let i = 0; i < verts; i++) {
+      this.pos.push(p[i * 3], p[i * 3 + 1], p[i * 3 + 2]);
+      this.nrm.push(n[i * 3], n[i * 3 + 1], n[i * 3 + 2]);
+      this.frag.push(frag[i * 2], frag[i * 2 + 1]);
+      this.col.push(col[i * 3], col[i * 3 + 1], col[i * 3 + 2]);
+      this.phy.push(phy[i * 2], phy[i * 2 + 1]);
+      this.size.push(spec.length, spec.width);
+      this.axis.push(axisW.x, axisW.y, axisW.z);
+    }
+    for (const i of index) this.idx.push(this.base + i);
+    this.base += verts;
+    this.count++;
+    g.dispose();
+  }
+
+  build(): BufferGeometry {
+    const g = new BufferGeometry();
+    g.setAttribute('position', new BufferAttribute(new Float32Array(this.pos), 3));
+    g.setAttribute('normal', new BufferAttribute(new Float32Array(this.nrm), 3));
+    g.setAttribute('aFrag', new BufferAttribute(new Float32Array(this.frag), 2));
+    g.setAttribute('aCol', new BufferAttribute(new Float32Array(this.col), 3));
+    g.setAttribute('aPhy', new BufferAttribute(new Float32Array(this.phy), 2));
+    g.setAttribute('aSize', new BufferAttribute(new Float32Array(this.size), 2));
+    g.setAttribute('aAxis', new BufferAttribute(new Float32Array(this.axis), 3));
+    g.setIndex(this.idx);
+    g.computeBoundingSphere();
+    return g;
+  }
+}
+
+/** 由羽根、指向羽尖的方向、羽片朝向构造一片羽毛的局部坐标系（羽轴 = +Y，羽片法线 = +Z）。 */
+export function featherMatrix(root: Vector3, tipDir: Vector3, vaneNormal: Vector3): Matrix4 {
+  const y = tipDir.clone().normalize();
+  const z = vaneNormal.clone().addScaledVector(y, -vaneNormal.dot(y)).normalize();
+  const x = new Vector3().crossVectors(y, z).normalize();
+  z.crossVectors(x, y).normalize();
+  return new Matrix4().makeBasis(x, y, z).setPosition(root);
+}
+
+/** 左右镜像一片已经放在右半身的羽毛：世界和局部坐标同时关于 x=0 翻转，羽色分区才会正确。 */
+export function mirrorMatrix(m: Matrix4): Matrix4 {
+  const out = m.clone();
+  const e = out.elements;
+  for (const i of [0, 4, 8, 12]) e[i] = -e[i];
+  return out;
+}
+
+const FEATHER_VERTEX_PARS = /* glsl */ `
+attribute vec2 aFrag;
+attribute vec3 aCol;
+attribute vec2 aPhy;
+attribute vec2 aSize;
+attribute vec3 aAxis;
+varying vec2 vFrag;
+varying vec3 vCol;
+varying vec2 vPhy;
+varying vec2 vSize;
+varying vec3 vAxisW;
+`;
+
+const FEATHER_VERTEX_MAIN = /* glsl */ `
+	vFrag = aFrag;
+	vCol = aCol;
+	vPhy = aPhy;
+	vSize = aSize;
+	vAxisW = normalize( mat3( modelMatrix ) * aAxis );
+`;
+
+const FEATHER_FRAGMENT_PARS = /* glsl */ `
+varying vec2 vFrag;
+varying vec3 vCol;
+varying vec2 vPhy;
+varying vec2 vSize;
+varying vec3 vAxisW;
+`;
+
+const FEATHER_SURFACE = /* glsl */ `
+	float edge = abs( vFrag.x );
+	float along = vFrag.y;
+	// 羽小枝：与羽轴成约 50° 的细纹；细节小于一个像素时淡出，避免摩尔纹
+	float phase = ( vPhy.y - 1.15 * abs( vPhy.x ) ) * 62.0;
+	float fw = fwidth( phase );
+	float stripe = 0.5 + 0.5 * sin( phase * 6.2831853 );
+	float atten = 1.0 - smoothstep( 0.1, 0.35, fw );
+	float lum = dot( vCol, vec3( 0.3, 0.5, 0.2 ) );
+	vec3 alb = vCol * ( 1.0 + ( stripe - 0.5 ) * 0.16 * atten );
+	alb *= mix( 0.6, 1.0, smoothstep( 0.0, 0.35, along ) );
+	// 羽小枝成束形成的纵向细纹；靠近后缘（被上一片压住的一侧）略暗
+	float streak = snoise( vec3( vPhy.x * 70.0, vPhy.y * 16.0, vSize.x * 53.0 ) ) * 0.5 + 0.5;
+	float sAtten = 1.0 - smoothstep( 0.15, 0.5, fwidth( vPhy.y * 16.0 ) );
+	alb *= 1.0 + ( streak - 0.5 ) * 0.12 * sAtten;
+	alb *= 1.0 - 0.12 * smoothstep( 0.55, 1.0, vFrag.x );
+	// 羽轴：一条细而有光泽的中线
+	float rachis = exp( - pow( vPhy.x / 0.013, 2.0 ) ) * ( 1.0 - smoothstep( 0.85, 1.0, along ) );
+	alb = mix( alb, alb * 1.4 + 0.015, rachis * 0.6 );
+	// 羽缘不规则的磨损缺口
+	float fray = snoise( vec3( vPhy.y * 55.0, vSize.x * 37.0, 3.0 ) ) * 0.5 + 0.5;
+	float lim = 0.86 + 0.14 * fray;
+	float aa = fwidth( edge ) + 1e-5;
+	float alpha = 1.0 - smoothstep( lim - aa, lim + aa, edge );
+	Surf s;
+	s.alpha = alpha;
+	s.albedo = alb;
+	s.ao = 1.0;
+	s.wrap = 0.35;
+	float dark = 1.0 - smoothstep( 0.05, 0.25, lum );
+	s.specTint = mix( vec3( 1.0 ), vec3( 0.8, 0.85, 1.0 ), dark );
+	s.gloss = 0.68;
+	s.specAmt = mix( 0.08, 0.5, dark );
+	return s;
+`;
+
+const FEATHER_EXTRA_LIGHT = /* glsl */ `
+	// 沿羽轴方向的各向异性光泽：黑色飞羽那种丝缎般的反光
+	vec3 T = normalize( vAxisW );
+	vec3 H = normalize( uSunDir + V );
+	float tdh = dot( T, H );
+	float sinTH = sqrt( max( 1.0 - tdh * tdh, 0.0 ) );
+	float lum = dot( vCol, vec3( 0.3, 0.5, 0.2 ) );
+	float dark = 1.0 - smoothstep( 0.05, 0.25, lum );
+	float amt = mix( 0.05, 0.5, dark );
+	vec3 tint = mix( vec3( 1.0 ), vec3( 0.78, 0.84, 1.0 ), dark );
+	return uSunColor * pow( sinTH, 90.0 ) * amt * sunShadow() * tint;
+`;
+
+export function makeFeatherMaterial(lighting: LightingUniforms): ShaderMaterial {
+  return makeLitMaterial({
+    lighting,
+    side: DoubleSide,
+    alphaToCoverage: true,
+    vertexPars: FEATHER_VERTEX_PARS,
+    vertexMain: FEATHER_VERTEX_MAIN,
+    fragmentPars: FEATHER_FRAGMENT_PARS,
+    surface: FEATHER_SURFACE,
+    extraLight: FEATHER_EXTRA_LIGHT,
+  });
+}
