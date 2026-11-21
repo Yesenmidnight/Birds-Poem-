@@ -86,6 +86,8 @@ interface RowSpec {
   angleJitter?: number;
   /** 几种羽色轮换使用。 */
   variants?: FeatherColorFn[];
+  /** 羽缘柔度（见 FeatherSpec.edgeSoft）。 */
+  edgeSoft?: number;
 }
 
 /** 右翼的六排羽毛，从最外层的肩羽到最贴身的初级飞羽。 */
@@ -248,6 +250,8 @@ const WING_ROWS: RowSpec[] = [
     lenJitter: 0.28,
     angleJitter: 0.32,
     variants: [scapular, scapularPale, scapularDark],
+    // 肩羽是从绒毛里长出来的，羽缘柔化一点，不要像硬纸片插在毛里
+    edgeSoft: 1,
   },
 ];
 
@@ -322,6 +326,7 @@ export function buildWingAndTail(p: BodyParams, seed = 5): { geometry: BufferGeo
         bow: row.bow,
         twist: row.twist,
         color,
+        edgeSoft: row.edgeSoft,
       };
       const m = featherMatrix(root, dir, nrm);
       batch.add(spec, m);

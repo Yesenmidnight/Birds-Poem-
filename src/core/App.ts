@@ -181,7 +181,7 @@ export class App {
     p.slider(fl, '壳层数', 4, 96, 1, this.bird.fur.shellCount, (v) => this.bird.fur.setShellCount(v), (v) => v.toFixed(0));
     p.slider(fl, '毛长', 0.05, 0.5, 0.005, FUR_DEFAULTS.furLen, (v) => (fur.uFurLen.value = v), (v) => `${v.toFixed(3)}`);
     p.slider(fl, '蓬松度', 0, 1, 0.01, FUR_DEFAULTS.fluff, (v) => (fur.uFluff.value = v));
-    p.slider(fl, '毛簇尺度', 1.5, 12, 0.1, FUR_DEFAULTS.tuftScale, (v) => (fur.uTuftScale.value = v));
+    p.slider(fl, '毛簇尺度', 1.5, 20, 0.1, FUR_DEFAULTS.tuftScale, (v) => (fur.uTuftScale.value = v));
     p.slider(fl, '顺流拉伸', 0, 0.9, 0.01, FUR_DEFAULTS.stretch, (v) => (fur.uStretch.value = v));
     p.slider(fl, '密度', 0.4, 1.6, 0.01, FUR_DEFAULTS.density, (v) => (fur.uDensity.value = v));
     p.slider(fl, '成簇', 0, 2, 0.01, FUR_DEFAULTS.clump, (v) => (fur.uClump.value = v));

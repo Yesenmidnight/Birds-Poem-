@@ -16,12 +16,15 @@ import { makeLitMaterial, rgb, type LightingUniforms } from '../glsl/lit';
 import { PLUMAGE_PARS } from './plumage';
 
 /**
- * 绒毛：壳层法（shell fur）。
+ * 绒毛：壳层法（shell fur），“梳顺的毛绒”。
  *
  * 同一张体表网格沿法线向外叠成几十层，每层在片元着色器里用三维噪声裁掉一部分，
- * 露出来的就是一缕缕毛尖。噪声按“毛流方向”做各向异性拉伸，所以毛簇是顺着羽毛倒伏方向拉长的；
- * 每根毛从体表出发时沿法线立起、逐渐倒向毛流方向，立起的角度由“蓬松度”决定——
- * 炸毛就是把角度调立、长度调长；顺毛则是让划过的那一片毛沿着划动方向倒下去。
+ * 露出来的就是一缕缕毛丝。噪声按“毛流方向”高度拉伸，所以裁出来的是顺着毛流拉长的细丝缕，
+ * 而不是一团团圆疙瘩。
+ *
+ * 毛形是“根立尖顺”：毛根先沿法线立起，把绒毛层撑出厚实的空气层（蓬松的来源），
+ * 中后段平滑地倒向毛流方向，毛尖几乎贴着身体流淌（顺滑的来源）。
+ * 所有长度起伏和方向扰动都只看空间坐标，相邻顶点的毛丝方向高度一致，才能成缕、不扎手。
  * 整个过程只有几何和数学，没有任何贴图。
  */
 export interface FurSettings {
@@ -35,22 +38,23 @@ export interface FurSettings {
   scallop: number;
   sheen: number;
   translucency: number;
-  /** 每根毛随机偏转的强度，打乱整齐的毛流。 */
+  /** 毛流方向上低频波浪的强度（空间连续，不是逐顶点随机）。 */
   random: number;
 }
 
 export const FUR_DEFAULTS: FurSettings = {
-  shellCount: 80,
-  furLen: 0.22,
+  shellCount: 96,
+  // 根立尖顺后毛的法向高度约为毛长的 0.81 倍，0.27 刚好补回第一版 0.22 × 0.92 的厚度
+  furLen: 0.27,
   fluff: 0.55,
   clump: 1.2,
-  tuftScale: 9.0,
-  stretch: 0.6,
+  tuftScale: 14.0,
+  stretch: 0.88,
   density: 1.0,
   scallop: 1.9,
   sheen: 0.35,
   translucency: 0.8,
-  random: 0.7,
+  random: 0.16,
 };
 
 const MAX_STROKES = 3;
@@ -97,17 +101,20 @@ const FUR_VERTEX_MAIN = /* glsl */ `
 		float t = aLayer / max( uShellCount - 1.0, 1.0 );
 	#endif
 
-	// 羽片叠瓦：绒毛长度随位置缓慢起伏，轮廓才有“一层层羽毛”的起伏感
-	float sc = snoise( base * uScallop + aParam.y * 0.6 );
+	// 羽片叠瓦：绒毛长度随位置缓慢起伏，轮廓才有“一层层羽毛”的起伏感。
+	// 起伏只看空间坐标 base，相邻顶点才会连续——绝不能混进逐顶点的随机数
+	float sc = snoise( base * uScallop );
 	float clumpAmt = sc * 0.5 + 0.5;
 	float len = uFurLen * aParam.x * ( 0.72 + 0.56 * clumpAmt ) * mix( 0.78, 1.32, uFluff );
-	len *= 0.7 + 0.6 * aParam.y;
+	// 毛长的细碎起伏同样是空间连续的低频噪声
+	len *= 0.82 + 0.36 * ( snoise( base * 5.0 + 3.1 ) * 0.5 + 0.5 );
 
-	// 毛簇：相干噪声让相邻的毛聚成一缕
+	// 毛簇：相干噪声让相邻的毛聚成一缕。频率压到网格单元以上，方向场在顶点之间才是平滑的
+	float cs = uTuftScale * 0.4;
 	vec3 cn = vec3(
-		snoise( base * uTuftScale + 31.7 ),
-		snoise( base * uTuftScale + 7.3 ),
-		snoise( base * uTuftScale + 19.1 ) );
+		snoise( base * cs + 31.7 ),
+		snoise( base * cs + 7.3 ),
+		snoise( base * cs + 19.1 ) );
 	vec3 clump = cn - nL * dot( cn, nL );
 
 	// 抚摸：靠近划过位置的毛顺着划动方向倒伏
@@ -122,29 +129,37 @@ const FUR_VERTEX_MAIN = /* glsl */ `
 	}
 	petW = clamp( petW, 0.0, 1.0 );
 
-	// 每个顶点再带一点随机方向，打乱整齐的毛流，绒毛才显得蓬松
+	// 微方向扰动：低频、空间连续的波动，像梳过的毛流里轻微起伏的波浪，而不是逐顶点乱扯
 	vec3 rn = vec3(
-		snoise( vec3( aParam.y * 61.0, 1.3, 7.1 ) ),
-		snoise( vec3( aParam.y * 83.0, 9.7, 2.9 ) ),
-		snoise( vec3( aParam.y * 107.0, 4.1, 5.3 ) ) );
+		snoise( base * 4.0 + 11.0 ),
+		snoise( base * 4.0 + 23.0 ),
+		snoise( base * 4.0 + 37.0 ) );
 	rn -= nL * dot( rn, nL );
 	vec3 T = fL + clump * uClump + rn * uRandom + pet * 2.5;
 	T = T - nL * dot( T, nL );
 	T = length( T ) > 1e-4 ? normalize( T ) : vec3( 0.0, 1.0, 0.0 );
 
-	// 毛从法线方向出发，逐渐倒向毛流方向；蓬松度决定起始时有多立
-	float phiMax = mix( 1.45, 0.28, pow( uFluff, 0.7 ) );
-	phiMax = mix( phiMax, 1.52, petW * 0.85 );
+	// 根立尖顺：倾角沿毛长从 0 平滑升到 phiTip，弯曲集中在 bendStart 之后——
+	// 毛根立着撑厚度，中后段顺滑地倒向毛流方向，终端倾角约 70°~80°
+	float phiTip = mix( 1.45, 1.22, uFluff );
+	float bendStart = mix( 0.18, 0.36, uFluff );
+	phiTip = mix( phiTip, 1.52, petW * 0.85 );
+	bendStart = mix( bendStart, 0.08, petW );
 	len *= 1.0 - 0.38 * petW;
 	#ifdef CORE_PASS
 		len = 0.0;
 	#endif
-	float s = t * len;
-	float inv = 1.0 / max( phiMax, 1e-3 );
-	float A = sin( phiMax * t ) * inv;
-	float B = ( 1.0 - cos( phiMax * t ) ) * inv;
-	float phi = phiMax * t;
-	pos = base + ( nL * A + T * B ) * s;
+	// 沿毛长数值积分出毛的位置（6 步中点法）
+	const int STEPS = 6;
+	float dt = t / float( STEPS );
+	vec3 acc = vec3( 0.0 );
+	for ( int i = 0; i < STEPS; i ++ ) {
+		float tau = ( float( i ) + 0.5 ) * dt;
+		float ph = phiTip * smoothstep( bendStart, 1.0, tau );
+		acc += nL * cos( ph ) + T * sin( ph );
+	}
+	pos = base + acc * ( dt * len );
+	float phi = phiTip * smoothstep( bendStart, 1.0, t );
 	nrm = normalize( nL * cos( phi ) + T * sin( phi ) * 0.45 );
 
 	vPos = base;
@@ -153,7 +168,7 @@ const FUR_VERTEX_MAIN = /* glsl */ `
 	vParam = aParam;
 	vT = t;
 	vClump = clumpAmt;
-	vStrandT = normalize( mat3( modelMatrix ) * ( nL * cos( phiMax ) + T * sin( phiMax ) ) );
+	vStrandT = normalize( mat3( modelMatrix ) * ( nL * cos( phi ) + T * sin( phi ) ) );
 `;
 
 const FUR_FRAGMENT_PARS = /* glsl */ `
@@ -176,7 +191,8 @@ const FUR_SURFACE = /* glsl */ `
 	#ifdef CORE_PASS
 		float alpha = 1.0;
 	#else
-		// 毛簇图样：在毛流方向上拉伸噪声，毛尖处阈值更高，所以只有最密的毛簇能长到外层
+		// 毛簇图样：在毛流方向上高度拉伸噪声，裁出来的是顺着毛流拉长的细丝缕而不是圆疙瘩；
+		// 毛尖处阈值更高，所以只有最密的毛缕能长到外层
 		vec3 fO = normalize( vFlowO );
 		vec3 q = vPos - fO * dot( vPos, fO ) * uStretch;
 		float d1 = fbm3( q * uTuftScale );
@@ -191,7 +207,8 @@ const FUR_SURFACE = /* glsl */ `
 	#endif
 	Surf s;
 	s.alpha = alpha;
-	s.albedo = plumage( vPos, normalize( vNO ), vParam.z ) * ( 0.94 + 0.12 * vParam.y );
+	// 明暗的细碎起伏也只看空间坐标，保持连续
+	s.albedo = plumage( vPos, normalize( vNO ), vParam.z ) * ( 0.94 + 0.12 * ( snoise( vPos * 9.0 ) * 0.5 + 0.5 ) );
 	// 簇与簇之间的凹处更暗一点
 	s.ao = mix( 0.42, 1.0, pow( vT, 0.55 ) ) * ( 0.7 + 0.3 * vClump );
 	s.wrap = 0.55;

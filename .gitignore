@@ -2,6 +2,7 @@ node_modules
 dist
 shots
 refs
+tools/bin
 *.local
 .DS_Store
 Thumbs.db

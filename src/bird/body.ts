@@ -108,14 +108,15 @@ export function buildBody(params: BodyParams = LONG_TAILED_TIT, cell = 0.055): B
     furLen *= 1 - 0.97 * eyeMask;
     const beakD = Math.hypot(x - bx, y - by, z - bz);
     furLen *= 0.55 + 0.45 * smoothstep(0.15, 0.45, beakD);
-    // 翅膀覆盖区（两胁中后段）
+    // 翅膀覆盖区（两胁中后段）；肩部一带的绒毛留长一点，让它自然漫过肩羽的根部
     const wingMask =
       smoothstep(0.8, 1.05, Math.abs(x)) *
       smoothstep(1.95, 2.25, y) *
       (1 - smoothstep(3.0, 3.3, y)) *
       (1 - smoothstep(0.1, 0.5, z)) *
       (1 - smoothstep(-2.6, -2.2, z));
-    furLen = furLen * (1 - wingMask) + 0.4 * wingMask;
+    const shoulder = smoothstep(2.65, 3.0, y);
+    furLen = furLen * (1 - wingMask) + (0.4 + 0.35 * shoulder) * wingMask;
     // 腹底靠近腿的位置也短一些
     furLen *= 0.7 + 0.3 * smoothstep(0.35, 0.7, y);
 

@@ -35,6 +35,8 @@ export interface FeatherSpec {
   /** 沿长度方向的扭转（弧度）。 */
   twist: number;
   color: FeatherColorFn;
+  /** 羽缘柔度：0 为清晰的羽片，1 为边缘过渡变宽、磨损缺口变浅（肩羽用，让它像从绒毛里长出来）。 */
+  edgeSoft?: number;
 }
 
 /** 横向 9 列（中线两侧各 4 列），靠外缘更密一些以便弯出弧度。 */
@@ -57,6 +59,7 @@ export class FeatherBatch {
   private readonly col: number[] = [];
   private readonly phy: number[] = [];
   private readonly size: number[] = [];
+  private readonly soft: number[] = [];
   private readonly axis: number[] = [];
   private readonly idx: number[] = [];
   private base = 0;
@@ -119,6 +122,7 @@ export class FeatherBatch {
       this.col.push(col[i * 3], col[i * 3 + 1], col[i * 3 + 2]);
       this.phy.push(phy[i * 2], phy[i * 2 + 1]);
       this.size.push(spec.length, spec.width);
+      this.soft.push(spec.edgeSoft ?? 0);
       this.axis.push(axisW.x, axisW.y, axisW.z);
     }
     for (const i of index) this.idx.push(this.base + i);
@@ -135,6 +139,7 @@ export class FeatherBatch {
     g.setAttribute('aCol', new BufferAttribute(new Float32Array(this.col), 3));
     g.setAttribute('aPhy', new BufferAttribute(new Float32Array(this.phy), 2));
     g.setAttribute('aSize', new BufferAttribute(new Float32Array(this.size), 2));
+    g.setAttribute('aSoft', new BufferAttribute(new Float32Array(this.soft), 1));
     g.setAttribute('aAxis', new BufferAttribute(new Float32Array(this.axis), 3));
     g.setIndex(this.idx);
     g.computeBoundingSphere();
@@ -164,11 +169,13 @@ attribute vec2 aFrag;
 attribute vec3 aCol;
 attribute vec2 aPhy;
 attribute vec2 aSize;
+attribute float aSoft;
 attribute vec3 aAxis;
 varying vec2 vFrag;
 varying vec3 vCol;
 varying vec2 vPhy;
 varying vec2 vSize;
+varying float vSoft;
 varying vec3 vAxisW;
 `;
 
@@ -177,6 +184,7 @@ const FEATHER_VERTEX_MAIN = /* glsl */ `
 	vCol = aCol;
 	vPhy = aPhy;
 	vSize = aSize;
+	vSoft = aSoft;
 	vAxisW = normalize( mat3( modelMatrix ) * aAxis );
 `;
 
@@ -185,6 +193,7 @@ varying vec2 vFrag;
 varying vec3 vCol;
 varying vec2 vPhy;
 varying vec2 vSize;
+varying float vSoft;
 varying vec3 vAxisW;
 `;
 
@@ -207,10 +216,10 @@ const FEATHER_SURFACE = /* glsl */ `
 	// 羽轴：一条细而有光泽的中线
 	float rachis = exp( - pow( vPhy.x / 0.013, 2.0 ) ) * ( 1.0 - smoothstep( 0.85, 1.0, along ) );
 	alb = mix( alb, alb * 1.4 + 0.015, rachis * 0.6 );
-	// 羽缘不规则的磨损缺口
+	// 羽缘不规则的磨损缺口；柔度高的羽毛缺口更浅、过渡更宽
 	float fray = snoise( vec3( vPhy.y * 55.0, vSize.x * 37.0, 3.0 ) ) * 0.5 + 0.5;
-	float lim = 0.86 + 0.14 * fray;
-	float aa = fwidth( edge ) + 1e-5;
+	float lim = mix( 0.86 + 0.14 * fray, 0.94 + 0.06 * fray, vSoft );
+	float aa = fwidth( edge ) * ( 1.0 + 2.5 * vSoft ) + 1e-5;
 	float alpha = 1.0 - smoothstep( lim - aa, lim + aa, edge );
 	Surf s;
 	s.alpha = alpha;
