@@ -204,6 +204,9 @@ const FUR_SURFACE = /* glsl */ `
 		float alpha = clamp( cov / aa + 0.5, 0.0, 1.0 );
 		// 毛尖淡出，轮廓才不会像一圈硬刺
 		alpha *= 1.0 - smoothstep( 0.6, 1.0, vT ) * 0.92;
+		// 毛长系数压到零的地方（喙根四周、眼睑底下、翼面底下）没有毛：壳层已经塌贴在皮肤上，
+		// 再画出来就是一层半透明碎点盖在深色皮肤上，所以随毛长一起淡出
+		alpha *= smoothstep( 0.02, 0.08, vParam.x );
 	#endif
 	Surf s;
 	s.alpha = alpha;

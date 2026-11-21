@@ -21,7 +21,10 @@ export interface BodyParams {
   blend: number;
   /** 眼睛朝向（正值在 +x 一侧，另一侧镜像），单位向量。 */
   eyeDir: [number, number, number];
+  /** 眼球半径。 */
   eyeRadius: number;
+  /** 眼球中心离头部椭球中心的距离（沿 eyeDir）。眼球越大越要往头里埋，露出来的才只是一个微凸的眼面。 */
+  eyeOffset: number;
   /** 眼周裸露皮肤（不长羽毛）的半径。 */
   eyePatch: number;
   beakBase: [number, number, number];
@@ -45,12 +48,14 @@ export const LONG_TAILED_TIT: BodyParams = {
   back: { c: [0, 2.58, -1.0], r: [1.1, 1.05, 1.5] },
   rump: { c: [0, 2.18, -2.65], r: [0.75, 0.8, 0.9] },
   blend: 0.45,
-  eyeDir: v(0.86, 0.12, 0.5),
-  eyeRadius: 0.16,
+  // 眼睛贴近嘴根：中轴比原来更朝前；眼球直径约为头宽的三成，埋得深，露出来的只是一个微凸的眼面
+  eyeDir: v(0.72, 0.1, 0.68),
+  eyeRadius: 0.24,
+  eyeOffset: 0.622,
   eyePatch: 0.21,
   beakBase: [0, 3.56, 1.44],
   beakDir: v(0, -0.1, 1),
-  beakLength: 0.48,
+  beakLength: 0.39,
   tailBase: [0, 2.13, -3.15],
   tailDir: v(0, -0.22, -0.975),
   bounds: { min: [-1.45, 0.05, -3.9], max: [1.45, 4.5, 1.8] },
@@ -98,9 +103,9 @@ export function ellipsoidNormDist(x: number, y: number, z: number, e: Ellipsoid)
 
 /** 体表某一点离眼睛中轴线的距离（判断是否落在眼周裸区内）。 */
 export function eyeAxisDist(x: number, y: number, z: number, p: BodyParams, side: number): number {
-  const cx = side * p.eyeDir[0] * 0.66 + p.head.c[0];
-  const cy = p.eyeDir[1] * 0.66 + p.head.c[1];
-  const cz = p.eyeDir[2] * 0.66 + p.head.c[2];
+  const cx = side * p.eyeDir[0] * p.eyeOffset + p.head.c[0];
+  const cy = p.eyeDir[1] * p.eyeOffset + p.head.c[1];
+  const cz = p.eyeDir[2] * p.eyeOffset + p.head.c[2];
   const dx = x - cx;
   const dy = y - cy;
   const dz = z - cz;

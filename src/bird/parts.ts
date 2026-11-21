@@ -40,9 +40,10 @@ export function buildMandible(p: BodyParams, upper: boolean): BufferGeometry {
 
   const ringPoint = (i: number, j: number): [number, number, number] => {
     const s = i / rings;
-    const w = 0.19 * Math.pow(1 - s, 0.72) + 0.004;
-    const hu = 0.17 * Math.pow(1 - s, 0.85) + 0.004;
-    const hl = 0.1 * (1 - s) * (1 - s) + 0.003;
+    // 嘴短了，基部也相应收细一点，锥角和原来差不多（约 23°），仍是尖巧的小三角锥
+    const w = 0.168 * Math.pow(1 - s, 0.72) + 0.0035;
+    const hu = 0.15 * Math.pow(1 - s, 0.85) + 0.0035;
+    const hl = 0.088 * (1 - s) * (1 - s) + 0.0025;
     const c = base.clone().addScaledVector(dir, s * p.beakLength).addScaledVector(up, -0.07 * s * s * p.beakLength);
     const th = upper ? (j / radial) * Math.PI : Math.PI + (j / radial) * Math.PI;
     const sy = Math.sin(th);
@@ -93,7 +94,7 @@ export function buildMandible(p: BodyParams, upper: boolean): BufferGeometry {
  * 底下若是黑的，毛缝里就会透出黑底、看着像一圈锯齿；垫成白色后毛丝和底色融为一体，
  * 黑喙像是从白绒里长出来的。嘴缝面永远是暗的，张嘴时口腔里不会发白。
  */
-export function makeBeakMaterial(lighting: LightingUniforms, p: BodyParams): ShaderMaterial {
+export function makeBeakMaterial(lighting: LightingUniforms, p: BodyParams, upper: boolean): ShaderMaterial {
   const dir = new Vector3(...p.beakDir).normalize();
   const up = new Vector3().crossVectors(dir, X_AXIS).normalize();
   return makeLitMaterial({
@@ -104,12 +105,14 @@ export function makeBeakMaterial(lighting: LightingUniforms, p: BodyParams): Sha
       uBaseCol: { value: rgb('#e6e1d8') },
       uBeakDir: { value: dir },
       uBeakUp: { value: up },
+      uBeakSide: { value: upper ? 1 : -1 },
     },
     fragmentPars: /* glsl */ `
 uniform vec3 uBeakCol;
 uniform vec3 uBaseCol;
 uniform vec3 uBeakDir;
 uniform vec3 uBeakUp;
+uniform float uBeakSide;
 varying vec3 vObj;
 varying float vSeam;
 `,
@@ -126,17 +129,25 @@ varying float vSeam;
 	float along = dot( vObj, uBeakDir );
 	float grain = snoise( vObj * 120.0 ) * 0.5 + 0.5;
 	float base = 1.0 - smoothstep( 0.1, 0.2, along + ( snoise( vObj * 60.0 ) - 0.5 ) * 0.05 );
-	// 嘴缝面和紧贴嘴缝的内侧永远是暗的：合缝是一条线，张嘴时口腔里也不发白
-	base *= ( 1.0 - vSeam ) * smoothstep( 0.025, 0.07, abs( dot( vObj, uBeakUp ) ) );
+	// 绒羽色只垫在嘴根朝外的那一面（上颌的上侧、下颌的下侧，也就是合拢时被毛搭住的地方）；
+	// 嘴缝面和靠近嘴缝的内侧永远是暗的：合缝是一条线，张嘴时口腔里也不发白
+	base *= ( 1.0 - vSeam ) * smoothstep( 0.06, 0.12, uBeakSide * dot( vObj, uBeakUp ) );
 	Surf s;
 	s.albedo = mix( uBeakCol * ( 0.8 + 0.4 * grain ), uBaseCol * ( 0.92 + 0.12 * grain ), base );
 	s.ao = 1.0;
 	s.wrap = mix( 0.3, 0.55, base );
 	s.specTint = vec3( 1.0 );
 	s.gloss = mix( 0.62, 0.3, base );
-	s.specAmt = mix( 0.55, 0.05, base );
+	// 嘴缝面是平的、朝上对着天光，高光要压掉，不然张嘴时口腔里会泛出一块灰白
+	s.specAmt = mix( 0.55 * ( 1.0 - 0.85 * vSeam ), 0.05, base );
 	s.alpha = 1.0;
 	return s;
+`,
+    extraLight: /* glsl */ `
+	// 黑喙的轮廓边缘映一丝天光：上下颌的合缝和喙脊的立体感在正面、侧面才读得出来
+	float dark = 1.0 - smoothstep( 0.05, 0.2, dot( s.albedo, vec3( 0.3, 0.5, 0.2 ) ) );
+	float rim = pow( 1.0 - clamp( dot( N, V ), 0.0, 1.0 ), 3.0 );
+	return uSkyColor * rim * 0.4 * dark;
 `,
   });
 }
@@ -152,22 +163,32 @@ export interface EyeFrame {
   center: Vector3;
   /** 眼睛局部 → 鸟局部。 */
   quat: Quaternion;
+  /** “朝嘴方向”在眼睛局部坐标系里的方向（瞬膜从前眼角往后扫要用它，不能用局部 +X）。 */
+  forwardLocal: Vector3;
 }
 
+/**
+ * 眼睛局部坐标系：原点在眼球中心，+Z 为注视轴（指向体外），+Y 永远朝头顶。
+ * +X = +Y × +Z 保持右手系，于是右眼的 +X 指向后眼角、左眼的 +X 指向前眼角——
+ * 凡是“朝嘴那边”的逻辑都用 forwardLocal，不能假设 +X 朝嘴。
+ * （早先用 y = d × x 构造 +Y，右眼会整个上下颠倒。）
+ */
 export function eyeFrame(p: BodyParams, side: 1 | -1): EyeFrame {
   const d = new Vector3(side * p.eyeDir[0], p.eyeDir[1], p.eyeDir[2]).normalize();
-  const center = new Vector3(p.head.c[0], p.head.c[1], p.head.c[2]).addScaledVector(d, 0.66);
-  // 把“朝前”方向投到眼球的切平面上，得到指向嘴那一边的前眼角方向
-  const forward = new Vector3(0, p.beakDir[1], p.beakDir[2]).normalize();
-  const x = forward.addScaledVector(d, -forward.dot(d)).normalize();
-  const y = new Vector3().crossVectors(d, x).normalize();
+  const center = new Vector3(p.head.c[0], p.head.c[1], p.head.c[2]).addScaledVector(d, p.eyeOffset);
+  // 头顶方向投到眼球的切平面上
+  const y = new Vector3(0, 1, 0).addScaledVector(d, -d.y).normalize();
+  const x = new Vector3().crossVectors(y, d).normalize();
   const quat = new Quaternion().setFromRotationMatrix(new Matrix4().makeBasis(x, y, d));
-  return { side, center, quat };
+  const forward = new Vector3(0, p.beakDir[1], p.beakDir[2]).normalize();
+  forward.addScaledVector(d, -forward.dot(d)).normalize();
+  const forwardLocal = new Vector3(forward.dot(x), forward.dot(y), forward.dot(d));
+  return { side, center, quat, forwardLocal };
 }
 
 /** 眼球：带“相对注视轴方向”属性，虹膜和眼神光据此绘制。 */
 export function buildEyeball(p: BodyParams): BufferGeometry {
-  const g = new SphereGeometry(p.eyeRadius, 36, 24);
+  const g = new SphereGeometry(p.eyeRadius, 48, 32);
   g.setAttribute('aEye', new BufferAttribute(new Float32Array(g.attributes.position.array as Float32Array), 3));
   // aEye 要的是单位方向
   const a = g.attributes.aEye as BufferAttribute;
@@ -178,10 +199,16 @@ export function buildEyeball(p: BodyParams): BufferGeometry {
 }
 
 /** 眼角离注视轴的夹角（前后眼角就在这里交汇收尖）。 */
-const CORNER = (32 * Math.PI) / 180;
-/** 睑裂开度：上缘略平缓（约 +11°），下缘圆润托起（约 −27°），整体是横置的杏仁/橄榄形。 */
-const UPPER_MARGIN_Y = 0.19;
-const LOWER_MARGIN_Y = -0.45;
+const CORNER = (30 * Math.PI) / 180;
+/**
+ * 睑裂开度（单位：眼球半径）：黑豆眼圆润饱满，只是略呈横置杏仁——宽高比约 1.15 : 1，
+ * 上缘略平缓（+23.6°），下缘圆润托起（−28.7°）。
+ */
+const UPPER_MARGIN_Y = 0.4;
+const LOWER_MARGIN_Y = -0.48;
+/** 上、下睑缘在正中剖面里离注视轴的极角（弧度），合拢时各转这么多就在中线相遇。 */
+export const LID_GAP_UPPER = Math.asin(UPPER_MARGIN_Y);
+export const LID_GAP_LOWER = Math.asin(-LOWER_MARGIN_Y);
 
 /**
  * 上下眼睑球冠壳。覆盖的是球面上一个平面切割出来的那一半：
@@ -213,9 +240,10 @@ export function buildEyelid(p: BodyParams, upper: boolean): BufferGeometry {
     const c2 = delta + Math.PI - Math.asin(s);
     // 取落在 [0, π] 里、最靠前（最小）的那个解
     const phiB = c1 >= 0 && c1 <= Math.PI ? c1 : clamp(c2, 0, Math.PI);
-    // 上下睑壳半径错开一点：合拢时两圈睑缘略有交叠，下睑在上睑外面，不会共面闪烁
-    const rMargin = upper ? 1.008 : 1.014;
-    const rShell = rMargin + 0.027;
+    // 眼睑壳半径：紧贴眼球（露出来的眼圈才窄），上下睑错开一点，合拢时两圈睑缘略有交叠，
+    // 下睑在上睑外面，不会共面闪烁
+    const rMargin = upper ? 1.006 : 1.01;
+    const rShell = 1.018;
     for (let i = 0; i <= rings; i++) {
       // 第一圈贴着眼球（睑缘内沿），第二圈起到壳半径；间距在睑缘附近更密
       const phi = i === 0 ? phiB : phiB + 0.05 + (phiMax - phiB - 0.05) * ((i - 1) / (rings - 1));
@@ -242,7 +270,7 @@ export function buildEyelid(p: BodyParams, upper: boolean): BufferGeometry {
 
 /** 瞬膜：夹在眼球和眼睑之间的薄球壳。前眼角以外的部分在片元里裁掉，由 uNictX 驱动横向扫过。 */
 export function buildNictitating(p: BodyParams): BufferGeometry {
-  return new SphereGeometry(p.eyeRadius * 1.003, 36, 24);
+  return new SphereGeometry(p.eyeRadius * 1.002, 48, 32);
 }
 
 export function makeEyeMaterial(lighting: LightingUniforms): ShaderMaterial {
@@ -262,8 +290,8 @@ varying vec3 vUpW;
 `,
     vertexMain: /* glsl */ `
 	vEye = aEye;
-	// 天光反射点的方向：在眼睛局部坐标里贴着露出眼面的上缘（注视轴上方约 8°）
-	vSparkW = normalize( mat3( modelMatrix ) * vec3( 0.0, 0.135, 1.0 ) );
+	// 天光反射点的方向：在眼睛局部坐标里贴着露出眼面的上缘（注视轴上方约 17°，上睑缘在 23.6°）
+	vSparkW = normalize( mat3( modelMatrix ) * vec3( 0.0, 0.3, 1.0 ) );
 	vUpW = normalize( mat3( modelMatrix ) * vec3( 0.0, 1.0, 0.0 ) );
 `,
     fragmentPars: /* glsl */ `
@@ -279,9 +307,9 @@ varying vec3 vUpW;
 	float ang = atan( vEye.y, vEye.x );
 	float streak = snoise( vec3( cos( ang ) * 6.0, sin( ang ) * 6.0, r * 5.0 ) ) * 0.5 + 0.5;
 	vec3 iris = mix( uIris * 0.8, uIris * 1.2, streak );
-	// 露出睑裂的只是球冠（|xy| < 0.55），正中是黑曜石般的纯黑，外缘才隐约透出深褐
-	vec3 alb = mix( uPupil, iris, smoothstep( 0.5, 0.78, r ) );
-	alb = mix( alb, uIrisDark, smoothstep( 0.86, 0.98, r ) );
+	// 露出睑裂的只是球冠（|xy| < 0.5），正中是黑曜石般的纯黑，外缘才隐约透出深褐
+	vec3 alb = mix( uPupil, iris, smoothstep( 0.52, 0.8, r ) );
+	alb = mix( alb, uIrisDark, smoothstep( 0.88, 0.98, r ) );
 	Surf s;
 	s.albedo = alb;
 	s.ao = 1.0;
@@ -300,11 +328,11 @@ varying vec3 vUpW;
 	float fres = 0.5 * pow( 1.0 - clamp( dot( N, V ), 0.0, 1.0 ), 5.0 );
 	// 天光反射点：极小、锐利的一粒，贴在露出眼面的上缘，不依赖太阳阴影
 	float nh = max( dot( N, normalize( vSparkW ) ), 0.0 );
-	vec3 spark = uSkyColor * 1.6 * ( pow( nh, 600.0 ) * 2.0 + pow( nh, 90.0 ) * 0.05 );
-	// 上缘一丝极弱的天光弧（只在上睑缘下方，眼角处淡出）
+	vec3 spark = uSkyColor * 1.6 * ( pow( nh, 800.0 ) * 2.0 + pow( nh, 120.0 ) * 0.04 );
+	// 上缘一丝极弱的天光弧（紧贴上睑缘下方，眼角处淡出）
 	float upW =
-		smoothstep( 0.1, 0.19, vEye.y ) * ( 1.0 - smoothstep( 0.19, 0.21, vEye.y ) ) *
-		( 1.0 - smoothstep( 0.3, 0.55, abs( vEye.x ) ) );
+		smoothstep( 0.3, 0.36, vEye.y ) * ( 1.0 - smoothstep( 0.36, 0.39, vEye.y ) ) *
+		( 1.0 - smoothstep( 0.3, 0.45, abs( vEye.x ) ) );
 	vec3 arc = uSkyColor * 0.12 * upW;
 	return env * fres + spark + arc;
 `,
@@ -312,20 +340,16 @@ varying vec3 vUpW;
 }
 
 /**
- * 眼睑壳材质：睑缘带一点肉质厚度（aLid 0..1）——上睑缘一丝暗赭黄，下睑缘深黑褐；
- * 往外是灰褐色的眼睑皮肤，最外圈（aLid → 2）过渡到贴着眉弓的白绒羽色，让眼圈看起来
- * 是长着细短绒羽的眼睑，而不是一圈秃皮。
+ * 眼睑壳材质：外面整圈就是面部绒羽的白（眼睑上长着细短绒羽，和眼周白毛无缝衔接），
+ * 只有紧贴眼球最内圈极细的一线是肉质睑缘——上睑缘一丝暗赭黄，下睑缘深黑褐。
  */
 export function makeLidMaterial(lighting: LightingUniforms, upper: boolean): ShaderMaterial {
   return makeLitMaterial({
     lighting,
     side: DoubleSide,
     uniforms: {
-      uLidDome: { value: rgb(upper ? '#9a928a' : '#6e665f') },
-      uLidEdge: { value: rgb(upper ? '#5a4a2c' : '#2a2220') },
-      uLidWhite: { value: rgb('#ddd6cc') },
-      // 上睑外面很快就是白绒羽色（眉弓压下来），下睑露出较长一段灰褐色眼圈
-      uLidWhiteAt: { value: upper ? 1.2 : 1.7 },
+      uLidWhite: { value: rgb('#ebe6de') },
+      uLidEdge: { value: rgb(upper ? '#6b5a3a' : '#241c1a') },
     },
     vertexPars: /* glsl */ `
 attribute float aLid;
@@ -335,37 +359,42 @@ varying float vLid;
 	vLid = aLid;
 `,
     fragmentPars: /* glsl */ `
-uniform vec3 uLidDome;
-uniform vec3 uLidEdge;
 uniform vec3 uLidWhite;
-uniform float uLidWhiteAt;
+uniform vec3 uLidEdge;
 varying float vLid;
 `,
     surface: /* glsl */ `
 	float band = 1.0 - smoothstep( 0.0, 1.0, vLid );
-	vec3 dome = mix( uLidDome, uLidWhite, smoothstep( uLidWhiteAt - 0.3, uLidWhiteAt + 0.3, vLid ) );
-	dome *= 0.94 + 0.12 * ( snoise( vWorldPos * 90.0 ) * 0.5 + 0.5 );
+	// 绒羽白带一点细碎的明暗，和旁边壳层绒毛的质感接得上
+	vec3 dome = uLidWhite * ( 0.94 + 0.12 * ( snoise( vWorldPos * 90.0 ) * 0.5 + 0.5 ) );
 	Surf s;
 	s.albedo = mix( dome, uLidEdge, band );
-	s.ao = mix( 1.0, 0.75, band );
-	s.wrap = 0.4;
+	s.ao = mix( 1.0, 0.7, band );
+	s.wrap = 0.55;
 	s.specTint = vec3( 1.0 );
 	s.gloss = 0.3;
-	s.specAmt = 0.06;
+	s.specAmt = 0.0;
 	s.alpha = 1.0;
 	return s;
 `,
   });
 }
 
-/** 瞬膜材质：半透明乳灰薄壳，uNictX 之前（前眼角一侧）的部分透明掉，边缘柔一点。 */
-export function makeNictMaterial(lighting: LightingUniforms): ShaderMaterial {
+/**
+ * 瞬膜材质：半透明乳灰薄壳，uNictX 之前（前眼角一侧）的部分透明掉，由前眼角往后眼角扫过。
+ * “前”由 uFwd（朝嘴方向在眼睛局部坐标系里的方向）给出，左右眼都用同一套逻辑。
+ */
+export function makeNictMaterial(lighting: LightingUniforms, forwardLocal: Vector3): ShaderMaterial {
   return makeLitMaterial({
     lighting,
     side: DoubleSide,
     transparent: true,
     depthWrite: false,
-    uniforms: { uNictX: { value: 1 }, uNictCol: { value: rgb('#d4d6d6') } },
+    uniforms: {
+      uNictX: { value: 1 },
+      uNictCol: { value: rgb('#d4d6d6') },
+      uFwd: { value: forwardLocal.clone() },
+    },
     vertexPars: /* glsl */ `
 varying vec3 vLocal;
 `,
@@ -375,6 +404,7 @@ varying vec3 vLocal;
     fragmentPars: /* glsl */ `
 uniform float uNictX;
 uniform vec3 uNictCol;
+uniform vec3 uFwd;
 varying vec3 vLocal;
 `,
     surface: /* glsl */ `
@@ -385,8 +415,9 @@ varying vec3 vLocal;
 	s.specTint = vec3( 1.0 );
 	s.gloss = 0.5;
 	s.specAmt = 0.15;
-	// 扫过的前缘微微向前拱起（上下两端被眼角拖住，落后一点）
-	s.alpha = 0.55 * smoothstep( uNictX, uNictX + 0.012, vLocal.x + 0.35 * abs( vLocal.y ) );
+	// 沿“朝嘴方向”的坐标；扫过的前缘微微向前拱起（两眼角处被拖住，落后一点）
+	float fwd = dot( vLocal, uFwd ) - 0.35 * abs( vLocal.x );
+	s.alpha = 0.55 * smoothstep( uNictX, uNictX + 0.012, fwd );
 	return s;
 `,
   });

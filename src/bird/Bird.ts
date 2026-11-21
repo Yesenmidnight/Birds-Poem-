@@ -14,8 +14,10 @@ import { LONG_TAILED_TIT, type BodyParams } from './bodySdf';
 import { buildBody } from './body';
 import { Fur } from './fur';
 import { makeFeatherMaterial } from './feathers';
-import { WING_PIVOT, buildTail, buildWing } from './wingTail';
+import { WING_PIVOT, buildTail, buildWing, buildWingPanel, makeWingPanelMaterial } from './wingTail';
 import {
+  LID_GAP_LOWER,
+  LID_GAP_UPPER,
   buildEyeball,
   buildEyelid,
   buildLegs,
@@ -34,7 +36,7 @@ import { clamp, lerp } from '../util/math';
 export type BirdPart = 'fur' | 'feathers' | 'beak' | 'eyes' | 'legs';
 
 /**
- * 眨眼：lidClose 为合拢程度 0..1（下眼睑上抬约 70%、上眼睑下压约 30%）；
+ * 眨眼：lidClose 为合拢程度 0..1（下睑上抬约 70%、上睑下压约 30%）；
  * nictClose 为瞬膜从前眼角向后眼角扫过的程度 0..1；squint 只抬下眼睑做出弯月眯眼 0..1。
  */
 export interface BlinkPose {
@@ -57,12 +59,6 @@ export interface TailPose {
   roll?: number;
   spread?: number;
 }
-
-/**
- * 眼睑合拢所需的转角（弧度）：上睑缘在注视轴上方约 11°，下睑缘在下方约 27°，
- * 0.66 rad 刚好让两圈睑缘在中线相遇（下睑出 70%、上睑出 30%，略有交叠）。
- */
-const LID_CLOSE_ANGLE = 0.66;
 
 interface EyeRig {
   upper: Mesh<BufferGeometry, ReturnType<typeof makeLidMaterial>>;
@@ -111,6 +107,7 @@ export class Bird {
     // ---------- 双翅与尾：各自一个枢轴 ----------
     const wingMat = makeFeatherMaterial(lighting);
     const tailMat = makeFeatherMaterial(lighting);
+    const panelMat = makeWingPanelMaterial(lighting);
     this.tailSpread = tailMat.uniforms.uSpread!;
     let featherCount = 0;
     for (const side of ['right', 'left'] as const) {
@@ -120,9 +117,12 @@ export class Bird {
       const mesh = new Mesh(wing.geometry, wingMat);
       mesh.castShadow = true;
       mesh.receiveShadow = true;
+      // 翼面底板：垫在正羽底下，羽片之间的缝不透出体表
+      const panel = new Mesh(buildWingPanel(params, s), panelMat);
+      panel.receiveShadow = true;
       const pivot = this.wingPivots[side];
       pivot.position.set(s * WING_PIVOT.x, WING_PIVOT.y, WING_PIVOT.z);
-      pivot.add(mesh);
+      pivot.add(panel, mesh);
       this.group.add(pivot);
     }
     const tail = buildTail(params);
@@ -135,10 +135,9 @@ export class Bird {
     this.group.add(this.tailPivot);
 
     // ---------- 上下喙：绕嘴根铰链张合 ----------
-    const beakMat = makeBeakMaterial(lighting, params);
     const beakBase = new Vector3(...params.beakBase);
-    const upper = new Mesh(buildMandible(params, true), beakMat);
-    const lower = new Mesh(buildMandible(params, false), beakMat);
+    const upper = new Mesh(buildMandible(params, true), makeBeakMaterial(lighting, params, true));
+    const lower = new Mesh(buildMandible(params, false), makeBeakMaterial(lighting, params, false));
     for (const [grp, mesh] of [
       [this.jawUpper, upper],
       [this.jawLower, lower],
@@ -166,7 +165,7 @@ export class Bird {
       eyeball.receiveShadow = true;
       const upperLid = new Mesh(buildEyelid(params, true), lidUpperMat);
       const lowerLid = new Mesh(buildEyelid(params, false), lidLowerMat);
-      const nictMat = makeNictMaterial(lighting);
+      const nictMat = makeNictMaterial(lighting, frame.forwardLocal);
       const nict = new Mesh(buildNictitating(params), nictMat);
       nict.visible = false;
       nict.renderOrder = 2;
@@ -228,7 +227,8 @@ export class Bird {
   }
 
   /**
-   * 眨眼。眼睑绕眼角横轴转动：上睑下压 30%、下睑上抬 70% 合拢；squint 只抬下睑，做成弯月眯眼。
+   * 眨眼。眼睑绕眼角横轴转动：下睑上抬约 70%（略微越过中线）、上睑下压约 30%（停在离中线一步处），
+   * 合拢后两圈睑缘之间留下一条极细的合缝暗线；squint 只抬下睑，做成弯月眯眼。
    * 瞬膜平时收在前眼角，nictClose 让它从前眼角向后眼角横向扫过眼球表面。
    */
   setBlink(pose: BlinkPose): void {
@@ -237,10 +237,10 @@ export class Bird {
     const nict = clamp(pose.nictClose ?? 0, 0, 1);
     const r = this.params.eyeRadius;
     for (const eye of this.eyes) {
-      eye.upper.rotation.x = 0.3 * LID_CLOSE_ANGLE * close;
-      eye.lower.rotation.x = -(0.7 * LID_CLOSE_ANGLE * close + 0.45 * LID_CLOSE_ANGLE * squint);
+      eye.upper.rotation.x = 0.8 * LID_GAP_UPPER * close;
+      eye.lower.rotation.x = -(LID_GAP_LOWER + 0.15 * LID_GAP_UPPER) * close - 0.5 * LID_GAP_LOWER * squint;
       eye.nict.visible = nict > 0.001;
-      // 眼角在 ±0.53r 处：收起时前缘停在前眼角之外，扫过时一直推到后眼角
+      // 前后眼角在 ±0.5r 处：收起时前缘停在前眼角之外，扫过时一直推到后眼角
       eye.nictX.value = lerp(0.62 * r, -0.62 * r, nict);
     }
   }

@@ -1,37 +1,43 @@
-import { Color, Vector3, type BufferGeometry } from 'three';
-import { rgb } from '../glsl/lit';
+import { BufferGeometry, Color, DoubleSide, Float32BufferAttribute, Vector3, type IUniform, type ShaderMaterial } from 'three';
+import { makeLitMaterial, rgb, type LightingUniforms } from '../glsl/lit';
 import { clamp, lerp, makeRng } from '../util/math';
-import { bodySDF, type BodyParams } from './bodySdf';
+import { bodyGradient, bodySDF, type BodyParams } from './bodySdf';
 import { FeatherBatch, featherMatrix, mirrorMatrix, type FeatherColorFn, type FeatherSpec } from './feathers';
 
 /**
  * 收拢的翅膀与长尾的排布。全部先按右半身摆放，再用 mirrorMatrix 镜像出左半身，
  * 这样羽色里的“前缘 / 后缘 / 外侧”在两侧都保持解剖学上正确的位置。
  *
- * 静态里露在外面的只有初级飞羽的羽扇（从后下方的绒毛里探出来搭在臀部上）；
- * 贴着身子的翅身（覆羽、次级/三级飞羽）被体表那层玫瑰粉棕的绒毛盖着，见 RowSpec.hidden。
+ * 肩背的玫瑰粉棕不是正羽而是绒羽，由 plumage.ts 画在躯体绒毛层里；这里是收拢的整片黑色翼面
+ * （覆羽、次级/三级飞羽、初级飞羽，黑底白边）和长尾羽这些硬挺的片状正羽。
  */
 type V3 = [number, number, number];
 
 const BLACK = rgb('#1b191d');
 const BLACK_SOFT = rgb('#2e2a2d');
-const WHITE = rgb('#f3efe7');
+const WHITE = rgb('#ece6da');
 
 const mix = (a: Color, b: Color, t: number): Color => a.clone().lerp(b, clamp(t, 0, 1));
 
-/** 黑色覆羽，带一截宽白梢——连起来就是翼斑。羽片像瓦片一样顺着翅长叠着，露在外面的那一截正好是白梢。 */
-const covert: FeatherColorFn = (_a, along) => mix(BLACK, WHITE, smooth(0.6, 0.7, along));
-/** 白梢较窄的覆羽。 */
-const covertSmall: FeatherColorFn = (_a, along) => mix(BLACK, WHITE, smooth(0.58, 0.68, along) * 0.9);
+/** 黑色覆羽，带一截白梢——连起来就是翼斑。羽片像瓦片一样顺着翅长叠着，露在外面的正好是白梢。
+ *  白梢只占露出那一截的后半段：前半段还是黑的，白翼斑才是一道干净的窄带，而不是一串白圆点。 */
+const covert: FeatherColorFn = (_a, along) => mix(BLACK, WHITE, smooth(0.78, 0.84, along));
+/** 中覆羽、初级覆羽：纯黑——侧面只读出大覆羽那一道翼斑。 */
+const covertSmall: FeatherColorFn = () => BLACK;
 /** 飞羽：黑，后缘一条细白羽缘。 */
 const flight: FeatherColorFn = (across, along) => {
-  const fringe = smooth(0.93, 1.0, across) * 0.7 + smooth(0.97, 1.0, along) * 0.3;
-  return mix(BLACK, WHITE, clamp(fringe, 0, 1) * 0.9);
+  const fringe = smooth(0.96, 1.0, across) * 0.75 + smooth(0.985, 1.0, along) * 0.25;
+  return mix(BLACK, WHITE, clamp(fringe, 0, 1) * 0.05);
 };
-/** 三级飞羽：黑，两缘都有较宽的白边。 */
+/** 初级飞羽：黑，后缘只有一丝很淡的白线——收拢时 9 片叠在一起，白边太亮会成一把梳子。 */
+const primary: FeatherColorFn = (across, along) => {
+  const fringe = smooth(0.97, 1.0, across) * 0.6 + smooth(0.99, 1.0, along) * 0.4;
+  return mix(BLACK, WHITE, clamp(fringe, 0, 1) * 0.06);
+};
+/** 三级飞羽：黑，两缘各一条窄白边。 */
 const tertial: FeatherColorFn = (across, along) => {
-  const edge = smooth(0.72, 0.88, Math.abs(across)) * 0.55 + smooth(0.88, 0.99, along) * 0.6;
-  return mix(BLACK, WHITE, clamp(edge, 0, 1) * 0.9);
+  const edge = smooth(0.8, 0.95, Math.abs(across)) * 0.85 + smooth(0.9, 0.99, along) * 0.6;
+  return mix(BLACK, WHITE, clamp(edge, 0, 1) * 0.7);
 };
 
 /** 尾羽：中央几对黑，最外侧一对白，倒数第二对外缘白。 */
@@ -77,153 +83,151 @@ interface RowSpec {
   angleJitter?: number;
   /** 羽缘柔度（见 FeatherSpec.edgeSoft）。 */
   edgeSoft?: number;
-  /**
-   * 只留数据、暂不生成网格。贴着身子的翅身（覆羽、次级/三级飞羽）在静态里被体表绒毛盖着，
-   * 单独摆出来只是一排排互不相连的羽片，不如藏在毛里；等 M2 做弹翅时再连同绒毛一起重排。
-   */
-  hidden?: boolean;
 }
 
-/** 右翼的几排羽毛，从盖在最外面的覆羽到最贴身的初级飞羽。 */
+/**
+ * 右翼的几排羽毛，从盖在最外面的覆羽到最贴身的初级飞羽。
+ * 收拢的翅是一块贴着两胁的干净包络面：覆羽在最外层，顺翅根一行排开、羽尖朝后下方，像瓦片一样
+ * 一片压着一片的侧缘，露出来的白梢连成一道翼斑；次级飞羽从覆羽底下垂下来，连成整片黑翼面；
+ * 三级飞羽带白边盖在次级飞羽后段上；初级飞羽最长最尖，收拢时指向后方搭在尾基上方。
+ * 羽根的 x = 体表 + 偏移，偏移按“覆羽在外、飞羽在内”从 0.20 递减到 0.08；
+ * 翼面底下的体表绒毛压到极短（body.ts），壳层毛不会从黑羽里钻出来。
+ * 覆羽一律是平的（cup 0）：瓦片只要有一点鼓度，中段就会顶破压在它上面的前一片。
+ */
 const WING_ROWS: RowSpec[] = [
   {
     // 初级飞羽：最长最尖，收拢时羽尖交叠在尾基上方
     count: 9,
-    rootA: [2.40, -1.15, 0.07],
-    rootB: [2.34, -1.95, 0.07],
-    tipA: [0.48, 2.75, -3.3],
-    tipB: [0.16, 2.62, -3.5],
+    rootA: [2.42, -1.1, 0.06],
+    rootB: [2.34, -1.75, 0.06],
+    tipA: [0.5, 2.8, -3.3],
+    tipB: [0.18, 2.65, -3.5],
     dirA: [0, 0, -1],
     dirB: [0, 0, -1],
-    nrmA: [0.82, 0.52, 0.12],
-    nrmB: [0.55, 0.78, 0.28],
+    nrmA: [0.85, 0.5, 0.1],
+    nrmB: [0.6, 0.78, 0.25],
     lenA: 2.2,
     lenB: 2.6,
-    width: 0.5,
-    asym: 0.28,
+    width: 0.7,
+    asym: 0.3,
     bare: 0.14,
     tipPos: 0.42,
     tipPow: 1.5,
-    cup: 0.12,
-    bow: 0.025,
-    twist: 0.6,
-    color: flight,
-    stack: 0.005,
+    cup: 0,
+    bow: 0,
+    twist: 0.08,
+    color: primary,
+    stack: 0.003,
   },
   {
-    // 初级覆羽：盖住初级飞羽的根部（片数少，每片露在外面的那一截正好是白梢）
-    count: 4,
-    rootA: [2.63, -1.1, 0.11],
-    rootB: [2.54, -1.8, 0.11],
-    dirA: [-0.06, -0.02, -0.998],
-    dirB: [-0.05, -0.02, -0.998],
-    nrmA: [0.82, 0.52, 0.12],
-    nrmB: [0.7, 0.65, 0.2],
-    lenA: 0.8,
-    lenB: 0.72,
-    width: 0.38,
-    asym: 0.36,
-    bare: 0.05,
-    tipPos: 0.85,
-    tipPow: 0.35,
-    cup: 0.12,
-    bow: 0.02,
-    twist: 0.15,
-    color: covertSmall,
-    stack: 0.005,
-    hidden: true,
-  },
-  {
-    // 次级飞羽：彼此压得很紧，连成一整片深色翼面
-    count: 6,
-    rootA: [2.63, -0.25, 0.1],
-    rootB: [2.48, -1.1, 0.1],
-    dirA: [0.05, -0.3, -0.953],
-    dirB: [0.04, -0.3, -0.953],
-    nrmA: [0.88, 0.46, 0.08],
-    nrmB: [0.88, 0.46, 0.08],
-    lenA: 1.95,
-    lenB: 1.8,
-    width: 0.62,
-    asym: 0.32,
-    bare: 0.12,
-    tipPos: 0.5,
-    tipPow: 0.9,
-    cup: 0.12,
-    bow: 0.02,
-    twist: 0.06,
-    color: flight,
-    stack: 0.006,
-    hidden: true,
-  },
-  {
-    // 三级飞羽
-    count: 3,
-    rootA: [2.73, -0.65, 0.14],
-    rootB: [2.64, -1.1, 0.14],
-    dirA: [0.08, -0.3, -0.952],
-    dirB: [0.06, -0.3, -0.952],
-    nrmA: [0.88, 0.46, 0.08],
-    nrmB: [0.88, 0.46, 0.08],
-    lenA: 2.15,
-    lenB: 2.0,
-    width: 0.7,
-    asym: 0.4,
+    // 次级飞羽：从翅根垂向后下方，9 片侧缘压得很紧，连成一整片深色翼面，末端露出细细的白缘
+    count: 9,
+    rootA: [2.74, -0.3, 0.075],
+    rootB: [2.6, -1.5, 0.075],
+    dirA: [0.02, -0.85, -0.52],
+    dirB: [0.02, -0.92, -0.39],
+    nrmA: [0.94, 0.33, 0.05],
+    nrmB: [0.94, 0.33, 0.05],
+    lenA: 0.9,
+    lenB: 0.85,
+    width: 0.6,
+    asym: 0.34,
     bare: 0.1,
     tipPos: 0.5,
-    tipPow: 0.8,
-    cup: 0.12,
-    bow: 0.02,
-    twist: 0.05,
-    color: tertial,
-    stack: 0.008,
-    hidden: true,
+    tipPow: 0.9,
+    cup: 0,
+    bow: 0,
+    twist: 0,
+    color: flight,
+    stack: 0.003,
   },
   {
-    // 大覆羽：白梢连成翼斑（间距约为羽长的一半，前一片的羽尖压在后一片白梢起点之前）
-    count: 4,
-    rootA: [2.90, 0.2, 0.16],
-    rootB: [2.74, -0.8, 0.16],
-    dirA: [0.07, -0.3, -0.953],
-    dirB: [0.05, -0.3, -0.953],
-    nrmA: [0.88, 0.46, 0.08],
-    nrmB: [0.88, 0.46, 0.08],
-    lenA: 0.8,
-    lenB: 0.72,
+    // 三级飞羽：两缘各一条窄白边，盖在次级飞羽的后段上
+    count: 3,
+    rootA: [2.95, -0.6, 0.09],
+    rootB: [2.8, -1.1, 0.09],
+    dirA: [0.02, -0.78, -0.62],
+    dirB: [0.02, -0.85, -0.52],
+    nrmA: [0.94, 0.33, 0.05],
+    nrmB: [0.94, 0.33, 0.05],
+    lenA: 1.2,
+    lenB: 1.15,
+    width: 0.56,
+    asym: 0.42,
+    bare: 0.08,
+    tipPos: 0.5,
+    tipPow: 0.8,
+    cup: 0,
+    bow: 0,
+    twist: 0,
+    color: tertial,
+    stack: 0.004,
+  },
+  {
+    // 初级覆羽：盖住初级飞羽的根部
+    count: 5,
+    rootA: [2.64, -1.1, 0.085],
+    rootB: [2.54, -1.75, 0.085],
+    dirA: [-0.02, -0.7, -0.71],
+    dirB: [-0.02, -0.7, -0.71],
+    nrmA: [0.95, 0.3, 0.05],
+    nrmB: [0.95, 0.3, 0.05],
+    lenA: 0.6,
+    lenB: 0.56,
     width: 0.36,
     asym: 0.4,
-    bare: 0.05,
-    tipPos: 0.85,
+    bare: 0.04,
+    tipPos: 0.7,
     tipPow: 0.35,
-    cup: 0.12,
-    bow: 0.02,
-    twist: 0.1,
-    color: covert,
-    stack: 0.005,
-    hidden: true,
+    cup: 0,
+    bow: 0,
+    twist: 0,
+    color: covertSmall,
+    stack: 0.002,
   },
   {
-    // 中覆羽
-    count: 3,
-    rootA: [3.06, 0.38, 0.19],
-    rootB: [2.92, -0.35, 0.19],
-    dirA: [0.09, -0.32, -0.944],
-    dirB: [0.07, -0.32, -0.944],
-    nrmA: [0.86, 0.48, 0.1],
-    nrmB: [0.86, 0.48, 0.1],
-    lenA: 0.56,
-    lenB: 0.5,
-    width: 0.3,
+    // 大覆羽：14 片顺翅根排开、侧缘深深相压，方一点的圆梢连成一道连续的窄翼斑
+    count: 14,
+    rootA: [2.96, 0.2, 0.095],
+    rootB: [2.78, -1.0, 0.095],
+    dirA: [0.03, -0.92, -0.39],
+    dirB: [0.03, -0.92, -0.39],
+    nrmA: [0.94, 0.33, 0.05],
+    nrmB: [0.94, 0.33, 0.05],
+    lenA: 0.52,
+    lenB: 0.48,
+    width: 0.44,
     asym: 0.42,
     bare: 0.04,
-    tipPos: 0.85,
+    tipPos: 0.74,
+    tipPow: 0.3,
+    cup: 0,
+    bow: 0,
+    twist: 0,
+    color: covert,
+    stack: 0.0015,
+  },
+  {
+    // 中覆羽：最外层，纯黑，压在大覆羽的基部上，绝不盖住大覆羽的白翼斑
+    count: 10,
+    rootA: [3.16, 0.32, 0.1],
+    rootB: [3.02, -0.7, 0.1],
+    dirA: [0.02, -0.66, -0.75],
+    dirB: [0.02, -0.66, -0.75],
+    nrmA: [0.92, 0.38, 0.05],
+    nrmB: [0.92, 0.38, 0.05],
+    lenA: 0.42,
+    lenB: 0.38,
+    width: 0.32,
+    asym: 0.5,
+    bare: 0.03,
+    tipPos: 0.7,
     tipPow: 0.35,
-    cup: 0.12,
-    bow: 0.02,
-    twist: 0.08,
+    cup: 0,
+    bow: 0,
+    twist: 0,
     color: covertSmall,
-    stack: 0.005,
-    hidden: true,
+    stack: 0.0015,
   },
 ];
 
@@ -276,7 +280,6 @@ export function buildWing(p: BodyParams, seed = 5, side: 1 | -1 = 1): FeatherSet
   const tip = new Vector3();
 
   for (const row of WING_ROWS) {
-    if (row.hidden) continue;
     for (let i = 0; i < row.count; i++) {
       const f = row.count > 1 ? i / (row.count - 1) : 0;
       const y = lerp(row.rootA[0], row.rootB[0], f) + (rng() - 0.5) * 0.06;
@@ -300,6 +303,14 @@ export function buildWing(p: BodyParams, seed = 5, side: 1 | -1 = 1): FeatherSet
           lerp(row.dirA[1], row.dirB[1], f),
           lerp(row.dirA[2], row.dirB[2], f),
         );
+        dir.normalize();
+        // 羽尖贴着包络面：两胁从前往后先窄后宽，直着伸出去的羽片后半段不是埋进体表就是翘离体表，
+        // 压不住后面那片的羽根，瓦片的叠压顺序就乱了（每片都露出整个羽身）。
+        // 把羽尖拉回“体表 + 偏移”处，只比后面那片的羽根高出半个叠压步长，刚好压在它上面
+        tip.copy(root).addScaledVector(dir, len);
+        tip.x = surfaceHalfWidth(p, tip.y, tip.z) + offset - row.stack * 0.5;
+        dir.subVectors(tip, root);
+        len = dir.length();
       }
       dir.normalize();
       nrm
@@ -334,6 +345,98 @@ export function buildWing(p: BodyParams, seed = 5, side: 1 | -1 = 1): FeatherSet
   const geometry = batch.build();
   geometry.translate(-side * WING_PIVOT.x, -WING_PIVOT.y, -WING_PIVOT.z);
   return { geometry, count: batch.count };
+}
+
+/** 翼面范围的上缘（与 body.ts / plumage.ts 里压毛的翼面区同一条线）。 */
+function wingTop(z: number): number {
+  return z >= -1.1 ? 3.3 + 0.2 * z : 3.08 + 0.12 * (z + 1.1);
+}
+/**
+ * 翼面范围的下缘：顺着次级飞羽垂到的位置走，到尾基附近抬回去（那里只有搭在尾基上的初级飞羽）。
+ * 底板比这条线再收 0.06，让次级飞羽的羽尖盖过底板的下缘，看不到一条硬边
+ */
+function wingBottom(z: number): number {
+  return (z >= -1.9 ? 2.0 + 0.13 * z : 1.77 + 0.9 * (-1.9 - z)) + 0.06;
+}
+
+/**
+ * 收拢的翅的底板：贴着体表的一整片深色薄壳，范围就是翼面区，比所有正羽都靠里。
+ * 正羽之间、羽尖与体表之间难免有缝，缝里透出的是这块和羽色一致的深色底板，
+ * 整只翅才是一块完整、收敛的黑翼面，而不是一片片各自为政的羽片。
+ * 四边带 0.09 cm 的透明渐隐（aDist 是到最近一条边的距离），边缘融进四周的绒毛里，没有硬边。
+ */
+export function buildWingPanel(p: BodyParams, side: 1 | -1 = 1): BufferGeometry {
+  const z0 = 0.5;
+  const z1 = -2.6;
+  const nz = 44;
+  const ny = 12;
+  const pos: number[] = [];
+  const nrm: number[] = [];
+  const dist: number[] = [];
+  const idx: number[] = [];
+  const g = [0, 0, 0];
+  for (let i = 0; i <= nz; i++) {
+    const z = lerp(z0, z1, i / nz);
+    // 上缘收进中覆羽底下，下缘比次级飞羽的羽尖再低一点：羽尖落在底板上，看不到一排羽尖的硬边
+    const yB = wingBottom(z) - 0.12;
+    const yT = wingTop(z) - 0.14;
+    for (let j = 0; j <= ny; j++) {
+      const y = lerp(yB, yT, j / ny);
+      const x = surfaceHalfWidth(p, y, z) + 0.045;
+      pos.push(side * x, y, z);
+      bodyGradient(side * x, y, z, p, g);
+      const gl = Math.hypot(g[0], g[1], g[2]) || 1;
+      nrm.push((side * g[0]) / gl, g[1] / gl, g[2] / gl);
+      dist.push(Math.max(Math.min(y - yB, yT - y, z0 - z, z - z1), 0));
+      if (i < nz && j < ny) {
+        const a = i * (ny + 1) + j;
+        const b = a + ny + 1;
+        if (side === 1) idx.push(a, b, a + 1, a + 1, b, b + 1);
+        else idx.push(a, a + 1, b, a + 1, b + 1, b);
+      }
+    }
+  }
+  const geometry = new BufferGeometry();
+  geometry.setAttribute('position', new Float32BufferAttribute(pos, 3));
+  geometry.setAttribute('normal', new Float32BufferAttribute(nrm, 3));
+  geometry.setAttribute('aDist', new Float32BufferAttribute(dist, 1));
+  geometry.setIndex(idx);
+  geometry.translate(-side * WING_PIVOT.x, -WING_PIVOT.y, -WING_PIVOT.z);
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
+/** 翼面底板的材质：和正羽一样的哑光深色，不抢羽片的层次；四边渐隐。 */
+export function makeWingPanelMaterial(lighting: LightingUniforms): ShaderMaterial {
+  const uniforms: Record<string, IUniform> = { uPanelCol: { value: BLACK.clone().multiplyScalar(0.9) } };
+  return makeLitMaterial({
+    lighting,
+    side: DoubleSide,
+    alphaToCoverage: true,
+    uniforms,
+    vertexPars: /* glsl */ `
+attribute float aDist;
+varying float vDist;
+`,
+    vertexMain: /* glsl */ `
+	vDist = aDist;
+`,
+    fragmentPars: /* glsl */ `
+uniform vec3 uPanelCol;
+varying float vDist;
+`,
+    surface: /* glsl */ `
+	Surf s;
+	s.albedo = uPanelCol;
+	s.ao = 1.0;
+	s.wrap = 0.4;
+	s.specTint = vec3( 1.0 );
+	s.gloss = 0.4;
+	s.specAmt = 0.04;
+	s.alpha = smoothstep( 0.0, 0.09, vDist );
+	return s;
+`,
+  });
 }
 
 /** 尾羽对数。 */

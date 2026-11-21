@@ -247,7 +247,7 @@ const FEATHER_SURFACE = /* glsl */ `
 	float dark = 1.0 - smoothstep( 0.05, 0.25, lum );
 	s.specTint = mix( vec3( 1.0 ), vec3( 0.8, 0.85, 1.0 ), dark );
 	s.gloss = 0.68;
-	s.specAmt = mix( 0.04, 0.12, dark );
+	s.specAmt = mix( 0.04, 0.05, dark );
 	return s;
 `;
 
@@ -259,7 +259,7 @@ const FEATHER_EXTRA_LIGHT = /* glsl */ `
 	float sinTH = sqrt( max( 1.0 - tdh * tdh, 0.0 ) );
 	float lum = dot( vCol, vec3( 0.3, 0.5, 0.2 ) );
 	float dark = 1.0 - smoothstep( 0.05, 0.25, lum );
-	float amt = mix( 0.02, 0.15, dark );
+	float amt = mix( 0.02, 0.08, dark );
 	vec3 tint = mix( vec3( 1.0 ), vec3( 0.78, 0.84, 1.0 ), dark );
 	return uSunColor * pow( sinTH, 110.0 ) * amt * sunShadow() * tint;
 `;

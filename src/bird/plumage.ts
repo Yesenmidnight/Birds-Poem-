@@ -49,23 +49,28 @@ vec3 plumage( vec3 p, vec3 n, float eyeD ) {
 
 	col = mix( col, uColBlack, mantle );
 
-	// 初级飞羽羽扇底下垫一层深色绒羽底（范围与 body.ts 里压低绒毛的羽扇区一致）：
-	// 压到黑羽边缘上的毛尖是暗色的，不会在黑羽上闪出一圈浅色碎点；羽片之间也不露白、不露粉
-	float fan =
-		smoothstep( 0.8, 1.05, abs( p.x ) ) *
-		smoothstep( 2.15, 2.4, p.y ) *
-		( 1.0 - smoothstep( 2.8, 3.05, p.y ) ) *
-		( 1.0 - smoothstep( -1.0, -0.7, p.z ) ) *
-		( 1.0 - smoothstep( -3.5, -3.2, p.z ) );
-	float bed = smoothstep( 0.15, 0.85, fan );
-	col = mix( col, mix( uColBlack, uColWhite, 0.25 ), bed * 0.9 );
+	// 收拢的翼面底下的体表不再垫深色：正羽底下有自己的深色底板，羽片之间不透体表；
+	// 抬翅时露出来的这一块就是正常的白/粉皮肤，不是一块灰秃斑
 
 	// 头顶一层极淡的暖粉
 	float crown = smoothstep( 0.5, 0.95, n.y ) * smoothstep( 2.8, 3.3, p.y ) * ( 1.0 - smoothstep( 1.0, 1.7, p.z ) );
 	col = mix( col, uColCrown, crown * 0.3 );
 
 	// 眼睑壳底下的体表是深色皮肤（露出来的只有眼圈以内，其余都被眼睑盖住）
-	col = mix( col, uColSkin, 1.0 - smoothstep( 0.07, 0.1, eyeD ) );
+	col = mix( col, uColSkin, 1.0 - smoothstep( 0.105, 0.15, eyeD ) );
+
+	// 口腔：张嘴时从上下颌之间露出来的体表是深暗的口腔色（body.ts 已把这里的毛压到零）。
+	// 范围严格收在合拢时被上下颌盖住的颌根截面之内（半宽 0.10、上 0.09、下 -0.02，往外 0.03 渐隐）：
+	// 合拢时颌根四周露出的那一圈皮肤仍是浅色，张嘴时颌根之间露出来的才是暗的口腔。
+	// 头的前脸比嘴根还鼓出约 0.1 cm，所以沿喙轴不设下限、只设上限
+	float bUp = ( p.y - 3.56 ) * 0.995 + ( p.z - 1.44 ) * 0.0995;
+	float bAl = -( p.y - 3.56 ) * 0.0995 + ( p.z - 1.44 ) * 0.995;
+	float mouth =
+		( 1.0 - smoothstep( 0.10, 0.135, abs( p.x ) ) ) *
+		( 1.0 - smoothstep( 0.09, 0.12, bUp ) ) *
+		smoothstep( -0.05, -0.02, bUp ) *
+		( 1.0 - smoothstep( 0.14, 0.2, bAl ) );
+	col = mix( col, uColSkin * 0.45, mouth );
 
 	// 口角：从嘴角向后下方延伸进绒毛里的一道细微暗线
 	vec3 ga = vec3( 0.15, 3.55, 1.545 );
