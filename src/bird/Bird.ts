@@ -188,7 +188,10 @@ export class Bird {
     }
     this.headParts.matrixAutoUpdate = false;
 
-    const legs = new Mesh(buildLegs(perch), makeLegMaterial(lighting));
+    // 落在枝上：沿枝条站立，面朝 -X。先定好朝向，腿脚再按它的逆矩阵从世界坐标转回局部
+    this.group.rotation.y = -Math.PI / 2;
+    this.group.updateMatrix();
+    const legs = new Mesh(buildLegs(perch, this.group.matrix.clone().invert()), makeLegMaterial(lighting));
     legs.castShadow = true;
     legs.receiveShadow = true;
 
@@ -202,8 +205,6 @@ export class Bird {
     this.breathSpace.add(this.headParts, this.fur.group);
     this.group.add(this.breathSpace, legs);
 
-    // 落在枝上：沿枝条站立，面朝 -X
-    this.group.rotation.y = -Math.PI / 2;
     this.setHeadPose(0, 0, 0);
 
     console.info(

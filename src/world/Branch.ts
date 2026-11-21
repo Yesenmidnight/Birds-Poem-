@@ -11,7 +11,8 @@ import {
   type IUniform,
 } from 'three';
 import { makeLitMaterial, rgb, type LightingUniforms } from '../glsl/lit';
-import { TAU, clamp, interpKeys, noise1, noise3 } from '../util/math';
+import type { Perch } from '../bird/parts';
+import { TAU, clamp, interpKeys, lerp, noise1, noise3 } from '../util/math';
 
 /**
  * 程序化树枝：沿样条曲线放平行标架，半径由关键点插值再叠加噪声起伏；
@@ -78,15 +79,71 @@ function ringRadius(r: number, along: number, cx: number, cz: number, seed: numb
   return r * (1 + 0.06 * lump + 0.025 * fine);
 }
 
+/** 枝条横截面的“顶面”方向与“侧向”（侧向 = 切线 × 顶面，主枝上指向世界 +Z）。 */
+function limbAxes(t: Vector3, up: Vector3, side: Vector3): void {
+  up.copy(UP).addScaledVector(t, -UP.dot(t)).normalize();
+  side.crossVectors(t, up).normalize();
+}
+
+/**
+ * 积雪帽在环向角 ph（从顶面起算，朝 side 为正）处的表面半径；这个角度上没有雪就返回 null。
+ * 网格和脚爪的抓握查询都走这一个函数，脚趾贴的就是真正画出来的那个雪面。
+ * press 是脚爪落点：雪在这些地方被踩得微微凹下去一点，凹不穿到树皮。
+ */
+function snowSurface(
+  f: Frame,
+  seed: number,
+  ph: number,
+  along: number,
+  up: Vector3,
+  side: Vector3,
+  press: readonly SnowPress[] = PRESS_NONE,
+): number | null {
+  // 越平的枝条积雪越宽，越陡越窄；细梢只挂一条窄边
+  const half =
+    1.62 *
+    (1 - 0.5 * Math.abs(f.t.y)) *
+    (0.86 + 0.28 * (noise1(f.along * 0.45 + seed, 3) - 0.5) * 2) *
+    clamp(f.r / 0.3, 0.35, 1);
+  if (Math.abs(ph) > half) return null;
+  const depthAmt = 0.15 * clamp(f.r / 0.55, 0.4, 1.25);
+  const cx = up.x * Math.cos(ph) + side.x * Math.sin(ph);
+  const cy = up.y * Math.cos(ph) + side.y * Math.sin(ph);
+  const cz = up.z * Math.cos(ph) + side.z * Math.sin(ph);
+  const prof = Math.pow(Math.cos((ph / Math.max(half, 1e-3)) * Math.PI * 0.5), 0.7);
+  const lumps = 0.55 + 0.45 * noise3(along * 2.0, ph * 2.2 + seed, 5.5);
+  const depth = depthAmt * prof * lumps;
+  const bark = ringRadius(f.r, along, cx * f.n.x + cy * f.n.y + cz * f.n.z, cx * f.b.x + cy * f.b.y + cz * f.b.z, seed);
+  // 脚爪落点处雪被踩出的小凹：沿枝和环向各一个高斯
+  let dent = 0;
+  for (const p of press) {
+    const da = f.c.x + along * f.t.x - p.worldX;
+    const dl = (ph - p.alpha) * f.r;
+    dent += PRESS_DEPTH * Math.exp(-(da * da + dl * dl) / (PRESS_RADIUS * PRESS_RADIUS));
+  }
+  return Math.max(bark, bark + depth + 0.004 - dent);
+}
+
+/** 脚爪落点（世界 x 与环向角）：积雪在这里被踩得微微凹下去。 */
+export interface SnowPress {
+  worldX: number;
+  alpha: number;
+}
+const PRESS_NONE: readonly SnowPress[] = [];
+/** 踩凹的深度和半径（厘米）。 */
+const PRESS_DEPTH = 0.035;
+const PRESS_RADIUS = 0.16;
+
 interface Limb {
   bark: BufferGeometry;
   snow: BufferGeometry | null;
   curve: CatmullRomCurve3;
   radii: number[];
   seed: number;
+  frames: Frame[];
 }
 
-function buildLimb(spec: LimbSpec): Limb {
+function buildLimb(spec: LimbSpec, press: readonly SnowPress[] = PRESS_NONE): Limb {
   const seed = spec.seed ?? 0;
   const segs = spec.segments ?? 150;
   const radial = spec.radial ?? 28;
@@ -156,22 +213,17 @@ function buildLimb(spec: LimbSpec): Limb {
     const dir = new Vector3();
     for (let i = 0; i <= segs; i++) {
       const f = frames[i];
-      up.copy(UP).addScaledVector(f.t, -UP.dot(f.t)).normalize();
-      side.crossVectors(f.t, up).normalize();
+      limbAxes(f.t, up, side);
       // 越平的枝条积雪越宽，越陡越窄；细梢只挂一条窄边
       const half =
         1.62 *
         (1 - 0.5 * Math.abs(f.t.y)) *
         (0.86 + 0.28 * (noise1(f.along * 0.45 + seed, 3) - 0.5) * 2) *
         clamp(f.r / 0.3, 0.35, 1);
-      const depthAmt = 0.15 * clamp(f.r / 0.55, 0.4, 1.25);
       for (let j = 0; j <= K; j++) {
         const ph = ((j / K) * 2 - 1) * half;
         dir.copy(up).multiplyScalar(Math.cos(ph)).addScaledVector(side, Math.sin(ph));
-        const prof = Math.pow(Math.cos((ph / Math.max(half, 1e-3)) * Math.PI * 0.5), 0.7);
-        const lumps = 0.55 + 0.45 * noise3(f.along * 2.0, ph * 2.2 + seed, 5.5);
-        const depth = depthAmt * prof * lumps;
-        const rr = ringRadius(f.r, f.along, dir.dot(f.n), dir.dot(f.b), seed) + depth + 0.004;
+        const rr = snowSurface(f, seed, ph, f.along, up, side, press)!;
         tmp.copy(f.c).addScaledVector(dir, rr);
         const k = i * scols + j;
         spos.set([tmp.x, tmp.y, tmp.z], k * 3);
@@ -190,7 +242,7 @@ function buildLimb(spec: LimbSpec): Limb {
     snowGeo.computeVertexNormals();
   }
 
-  return { bark: barkGeo, snow: snowGeo, curve, radii: spec.radii, seed };
+  return { bark: barkGeo, snow: snowGeo, curve, radii: spec.radii, seed, frames };
 }
 
 /** 主枝 + 几根带芽的细枝，鸟停在主枝 x≈0 处（枝面高度约 y=0）。 */
@@ -256,8 +308,12 @@ const LIMBS: LimbSpec[] = [
 
 export class Branches extends Group {
   readonly barkUniforms: Record<string, IUniform>;
+  /** 主枝（鸟停的那一根）：抓握查询用它的平行标架。 */
+  private readonly main: Limb;
+  private readonly press: readonly SnowPress[];
 
-  constructor(lighting: LightingUniforms) {
+  /** press：脚爪落点，积雪在那里被踩出小凹；和 Bird 的 FOOT_SPOTS 是同一组数。 */
+  constructor(lighting: LightingUniforms, press: readonly SnowPress[] = PRESS_NONE) {
     super();
     this.barkUniforms = {
       uBarkDark: { value: rgb('#4a4038') },
@@ -265,6 +321,8 @@ export class Branches extends Group {
       uLichen: { value: rgb('#9da38b') },
       uSnowCol: { value: rgb('#eef1f4') },
     };
+    this.press = press;
+    this.main = buildLimb(LIMBS[0], press);
     const common = {
       uSnowCol: this.barkUniforms.uSnowCol,
     };
@@ -362,8 +420,8 @@ uniform vec3 uBudCol;
     const tmpT = new Vector3();
     const tmpQ = new Quaternion();
 
-    for (const spec of LIMBS) {
-      const limb = buildLimb(spec);
+    for (const [index, spec] of LIMBS.entries()) {
+      const limb = index === 0 ? this.main : buildLimb(spec);
       const barkMesh = new Mesh(limb.bark, barkMat);
       barkMesh.castShadow = true;
       barkMesh.receiveShadow = true;
@@ -400,5 +458,51 @@ uniform vec3 uBudCol;
         this.add(bud);
       }
     }
+  }
+
+  /** 主枝上离给定世界 x 最近的那一帧（相邻两帧线性插值）。 */
+  private frameAt(worldX: number): Frame {
+    const frames = this.main.frames;
+    let i = 0;
+    while (i < frames.length - 2 && frames[i + 1].c.x < worldX) i++;
+    const a = frames[i];
+    const b = frames[i + 1];
+    const u = clamp((worldX - a.c.x) / (b.c.x - a.c.x), 0, 1);
+    return {
+      c: a.c.clone().lerp(b.c, u),
+      t: a.t.clone().lerp(b.t, u).normalize(),
+      n: a.n.clone().lerp(b.n, u).normalize(),
+      b: a.b.clone().lerp(b.b, u).normalize(),
+      r: lerp(a.r, b.r, u),
+      along: lerp(a.along, b.along, u),
+    };
+  }
+
+  /**
+   * 主枝在给定世界 x 处的抓握几何：中心、切线、顶面/侧向，以及任意环向角、任意轴向偏移处的真实外表面半径
+   * （树皮鼓包 + 积雪帽都算进去）。脚爪的每个路径点都从这里查，贴的就是画出来的那个面。
+   */
+  perchAt(worldX: number): Perch {
+    const f = this.frameAt(worldX);
+    const up = new Vector3();
+    const side = new Vector3();
+    limbAxes(f.t, up, side);
+    const seed = this.main.seed;
+    const hasSnow = this.main.snow !== null;
+    const dir = new Vector3();
+    return {
+      center: f.c,
+      tangent: f.t,
+      up,
+      side,
+      radius: f.r,
+      surfaceRadius: (alpha: number, along: number): number => {
+        const alongAbs = f.along + along;
+        dir.copy(up).multiplyScalar(Math.cos(alpha)).addScaledVector(side, Math.sin(alpha));
+        const bark = ringRadius(f.r, alongAbs, dir.dot(f.n), dir.dot(f.b), seed);
+        const snow = hasSnow ? snowSurface(f, seed, alpha, alongAbs, up, side, this.press) : null;
+        return snow === null ? bark : Math.max(bark, snow);
+      },
+    };
   }
 }

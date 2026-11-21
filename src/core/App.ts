@@ -22,7 +22,7 @@ import { Bird, type BirdPart, type BlinkPose, type TailPose, type WingPose } fro
 import { FUR_DEFAULTS } from '../bird/fur';
 import { MotionController, type MotionCue } from '../bird/motion/MotionController';
 import { restPose } from '../bird/motion/Pose';
-import type { Perch } from '../bird/parts';
+import { FOOT_SPOTS } from '../bird/parts';
 
 export interface ViewPreset {
   /** 相机方位角：+Z 方向为 0，向 +X 为正。 */
@@ -44,9 +44,6 @@ export const VIEWS: Record<string, ViewPreset> = {
   wide: { az: -0.5, el: 0.2, dist: 28, target: [2, 2, 0] },
 };
 const VIEW_NAMES = Object.keys(VIEWS);
-
-/** 栖枝在落点处的参数，脚趾要绕着它抓握。 */
-const PERCH: Perch = { radius: 0.42, axisY: -0.42, axisZ: 0 };
 
 export interface AppOptions {
   ui: boolean;
@@ -104,8 +101,9 @@ export class App {
     this.sky = new Sky(this.lighting.uniforms.uSunDir.value);
     this.backdrop = new Backdrop();
     this.snowfall = new Snowfall();
-    this.branches = new Branches(this.lighting.uniforms);
-    this.bird = new Bird(this.lighting.uniforms, PERCH);
+    this.branches = new Branches(this.lighting.uniforms, FOOT_SPOTS);
+    // 栖枝几何从树枝那里精确查（样条高度、树皮鼓包、积雪帽），脚爪才贴在真实的面上
+    this.bird = new Bird(this.lighting.uniforms, this.branches.perchAt(0));
     this.scene.add(this.sky.mesh, this.backdrop.mesh, this.snowfall.mesh, this.branches, this.bird.group);
 
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);

@@ -12,12 +12,13 @@ import {
 } from 'three';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { makeLitMaterial, rgb, type LightingUniforms } from '../glsl/lit';
-import { TAU, clamp, lerp } from '../util/math';
+import { TAU, clamp, lerp, smoothstep } from '../util/math';
 import type { BodyParams } from './bodySdf';
 
 /**
- * 喙、眼、眼睑、瞬膜、腿脚。全部直接在鸟的局部坐标里生成；
+ * 喙、眼、眼睑、瞬膜、腿脚。喙眼全部直接在鸟的局部坐标里生成；
  * 上下喙和上下眼睑各自是独立的网格，挂在铰链/眼局部坐标系下由 Bird 驱动。
+ * 腿脚要贴着世界里的栖枝抓握，先在世界坐标里按栖枝算好再转回鸟的局部坐标。
  */
 const UP = new Vector3(0, 1, 0);
 const X_AXIS = new Vector3(1, 0, 0);
@@ -426,17 +427,31 @@ varying vec3 vLocal;
 
 // ---------------------------------------------------------------- 腿脚
 
+/**
+ * 栖枝在落点处的抓握几何（世界坐标），由 Branches.perchAt 提供。
+ * 鸟的局部 +Z 平行于枝轴（鸟顺着枝站立），所以绕枝抓握的圆在鸟局部的 (X, Y) 横截面里；
+ * 脚爪的全部路径点都从 surfaceRadius 查真实表面（树皮鼓包 + 积雪帽），贴的就是画出来的那个面。
+ */
 export interface Perch {
-  /** 栖枝半径。 */
+  /** 落点处枝条中心（世界坐标）。 */
+  center: Vector3;
+  /** 枝轴切线（主枝上指向世界 +X）。 */
+  tangent: Vector3;
+  /** 顶面方向：垂直于切线、尽量朝上。 */
+  up: Vector3;
+  /** 侧向：切线 × 顶面，主枝上指向鸟的右侧（世界 +Z）。 */
+  side: Vector3;
+  /** 落点处枝条的基础半径（不含树皮鼓包和积雪）。 */
   radius: number;
-  /** 栖枝轴线高度。 */
-  axisY: number;
-  /** 栖枝轴线在落点处的 z。 */
-  axisZ: number;
+  /**
+   * 从顶面起算、朝 side 为正的环向角 alpha（弧度）处、沿枝轴偏移 along（厘米，正 = 切线方向）处的
+   * 真实外表面半径：树皮鼓包和朝上一面的积雪帽都算进去。
+   */
+  surfaceRadius(alpha: number, along: number): number;
 }
 
-/** 沿折线放样的变径管（平行传输标架），用于跗跖、脚趾和爪。 */
-function taperedTube(points: Vector3[], radii: number[], radial = 8): BufferGeometry {
+/** 沿折线放样的变径管（平行传输标架），用于跗跖、脚趾和爪。extra 是逐点标量（爪标记），烘成 aClaw。 */
+function taperedTube(points: Vector3[], radii: number[], radial = 8, extra?: number[]): BufferGeometry {
   const n = points.length;
   const tangents: Vector3[] = [];
   for (let i = 0; i < n; i++) {
@@ -448,6 +463,7 @@ function taperedTube(points: Vector3[], radii: number[], radial = 8): BufferGeom
     .crossVectors(tangents[0], Math.abs(tangents[0].y) < 0.9 ? UP : X_AXIS)
     .normalize();
   const pos: number[] = [];
+  const claw: number[] = [];
   const idx: number[] = [];
   const q = new Quaternion();
   const axis = new Vector3();
@@ -474,6 +490,7 @@ function taperedTube(points: Vector3[], radii: number[], radial = 8): BufferGeom
         points[i].y + normal.y * cn + bin.y * sn,
         points[i].z + normal.z * cn + bin.z * sn,
       );
+      claw.push(extra?.[i] ?? 0);
       if (i < n - 1 && j < radial) {
         const a = i * (radial + 1) + j;
         const b = a + 1;
@@ -485,105 +502,168 @@ function taperedTube(points: Vector3[], radii: number[], radial = 8): BufferGeom
   }
   const g = new BufferGeometry();
   g.setAttribute('position', new Float32BufferAttribute(pos, 3));
+  g.setAttribute('aClaw', new Float32BufferAttribute(claw, 1));
   g.setIndex(idx);
   g.computeVertexNormals();
   return g;
 }
 
-/** 脚趾贴着圆柱形枝条绕过去，末端是抠进树皮的爪尖。 */
-function toePath(
-  side: number,
-  perch: Perch,
-  footX: number,
-  wrap: number, // 绕枝角度（弧度），正值朝前
-  spread: number, // 向身体外侧撇开的角度
-  thick: number,
-  steps: number,
-): { points: Vector3[]; radii: number[] } {
-  const points: Vector3[] = [];
-  const radii: number[] = [];
-  for (let i = 0; i <= steps; i++) {
-    const t = i / steps;
-    const phi = wrap * t;
-    let r = perch.radius + thick * 0.7;
-    // 最后一小段是爪：往树皮里抠
-    const claw = clamp((t - 0.72) / 0.28, 0, 1);
-    r -= 0.035 * claw * claw;
-    const lat = Math.tan(spread) * phi * perch.radius * side;
-    points.push(
-      new Vector3(
-        footX + lat,
-        perch.axisY + Math.cos(phi) * r,
-        perch.axisZ + Math.sin(phi) * r * Math.sign(wrap) + 0.02,
-      ),
-    );
-    radii.push(lerp(thick, 0.004, Math.pow(t, 1.6)));
-  }
-  return { points, radii };
+/**
+ * 一根脚趾的走向。方向角都在脚掌处的切平面里量：0 = 顺着枝朝头的方向，正值朝脚的外侧（两脚各自的外侧）。
+ * psi0 是趾根出发的方向，curl 是绕到后面时转到的方向——真鸟的趾不是测地线，是先顺着枝再往下卷过去的钩子。
+ */
+interface ToeSpec {
+  psi0: number;
+  curl: number;
+  /** 沿表面的趾长（厘米，不含爪）。 */
+  length: number;
+  thick: number;
 }
 
-export function buildLegs(perch: Perch): BufferGeometry {
+const DEG = Math.PI / 180;
+/** 三前一后。前趾都往脚的外侧卷、包住外侧弧面；后趾朝后内方反扣。 */
+const TOES: ToeSpec[] = [
+  { psi0: -40 * DEG, curl: 85 * DEG, length: 0.5, thick: 0.03 },
+  { psi0: 0, curl: 100 * DEG, length: 0.62, thick: 0.032 },
+  { psi0: 40 * DEG, curl: 105 * DEG, length: 0.52, thick: 0.03 },
+  { psi0: 180 * DEG, curl: 265 * DEG, length: 0.46, thick: 0.028 },
+];
+/** 脚掌整体朝外侧斜偏的角度。 */
+const FOOT_YAW = 48 * DEG;
+
+/**
+ * 两只脚在栖枝上的落点：枝顶前后微错开、各略偏自己一侧（世界 x 与环向角，朝 side 为正）。
+ * 跗跖落在这里，积雪也在这里被踩出小凹——脚趾贴的就是那个凹下去的雪面。
+ */
+export const FOOT_SPOTS: { worldX: number; alpha: number }[] = [
+  { worldX: -0.11, alpha: 0.26 },
+  { worldX: 0.13, alpha: -0.26 },
+];
+
+interface Foot {
+  /** 脚掌在枝条横截面上的环向角（朝 side 为正）。 */
+  alpha: number;
+  /** 脚掌沿枝轴的偏移（厘米，正 = 切线方向）。 */
+  along: number;
+  /** 右脚 1、左脚 -1：决定“外侧”是 +alpha 还是 -alpha。 */
+  side: 1 | -1;
+}
+
+/**
+ * 脚趾贴着枝条真实表面走：把表面当成圆柱面，趾在切平面里的方向 (cos ψ, sin ψ) 决定每一步沿枝轴前进多少、
+ * 绕枝转过多少，所以趾只会在表面上绕过去——不会顺着枝轴扎进木头，也不会悬空飞出枝外。
+ * 趾身压在表面上（管心抬离表面 0.85 倍管径，底面微微压进雪里），趾节处微微鼓起；
+ * 最后 22% 是爪：急剧收尖，并向表面内钩，爪尖抠进树皮/雪面一点点。
+ */
+function toePath(perch: Perch, foot: Foot, spec: ToeSpec): { points: Vector3[]; radii: number[]; claw: number[] } {
+  const steps = 18;
+  const points: Vector3[] = [];
+  const radii: number[] = [];
+  const claw: number[] = [];
+  const n = new Vector3();
+  let alpha = foot.alpha;
+  let along = foot.along;
+  const dL = spec.length / steps;
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const psi = lerp(spec.psi0 + FOOT_YAW, spec.curl, smoothstep(0.1, 0.7, t));
+    // 趾身：从根到爪基缓慢收细，两个趾节处微微鼓起；爪：从爪基急剧收尖
+    const knuckle = 1 + 0.13 * (Math.exp(-(((t - 0.36) / 0.09) ** 2)) + 0.75 * Math.exp(-(((t - 0.66) / 0.09) ** 2)));
+    const body = lerp(spec.thick, spec.thick * 0.55, t) * knuckle;
+    const isClaw = smoothstep(0.78, 0.82, t);
+    const r = lerp(body, 0.004, Math.pow(smoothstep(0.78, 1.0, t), 0.8));
+    // 爪尖越靠末端越往表面里钩（最多抠进 0.014 cm）
+    const dig = isClaw * clamp((t - 0.78) / 0.22, 0, 1);
+    const lift = r * 0.85 - 0.014 * dig;
+    n.copy(perch.up).multiplyScalar(Math.cos(alpha)).addScaledVector(perch.side, Math.sin(alpha));
+    const rr = perch.surfaceRadius(alpha, along) + lift;
+    points.push(perch.center.clone().addScaledVector(perch.tangent, along).addScaledVector(n, rr));
+    radii.push(r);
+    claw.push(isClaw);
+    along += Math.cos(psi) * dL;
+    alpha += (foot.side * Math.sin(psi) * dL) / Math.max(rr, 0.05);
+  }
+  return { points, radii, claw };
+}
+
+/**
+ * 腿脚：跗跖从腹羽里伸下来落在枝顶，两只脚在枝顶前后微错开、各略偏自己一侧，脚掌朝外侧斜偏约 48°；
+ * 三根前趾贴着枝条真实表面包绕外侧弧面，后趾从内后侧反扣，每根趾末端一小段内钩的角质爪尖。
+ * 路径先在世界坐标里按栖枝算好，再用 worldToLocal（鸟群的逆矩阵）转回鸟的局部坐标。
+ */
+export function buildLegs(perch: Perch, worldToLocal: Matrix4): BufferGeometry {
   const parts: BufferGeometry[] = [];
-  for (const side of [1, -1]) {
-    const footX = 0.3 * side;
-    const ankle = new Vector3(footX, perch.axisY + perch.radius + 0.025, perch.axisZ + 0.09);
-    // 跗跖：从腹羽里伸出来，略向前倾
+  for (const s of [1, -1] as const) {
+    const spot = FOOT_SPOTS[s === 1 ? 0 : 1];
+    const foot: Foot = { alpha: spot.alpha, along: (spot.worldX - perch.center.x) / perch.tangent.x, side: s };
+    const normal = perch.up
+      .clone()
+      .multiplyScalar(Math.cos(foot.alpha))
+      .addScaledVector(perch.side, Math.sin(foot.alpha));
+    const ankle = perch.center
+      .clone()
+      .addScaledVector(perch.tangent, foot.along)
+      .addScaledVector(normal, perch.surfaceRadius(foot.alpha, foot.along) + 0.03);
+    // 跗跖：从腹羽里伸出来，略向前倾、微微弓着
+    const hip = new Vector3(-0.44, 0.62, 0.22 * s);
     parts.push(
       taperedTube(
         [
-          new Vector3(footX * 1.02, 0.66, 0.46),
-          new Vector3(footX * 1.02, 0.36, 0.3),
-          new Vector3(footX, 0.14, 0.13),
+          hip,
+          hip.clone().lerp(ankle, 0.4).add(new Vector3(-0.04, 0, 0.01 * s)),
+          hip.clone().lerp(ankle, 0.75).add(new Vector3(-0.02, 0, 0.005 * s)),
           ankle,
         ],
-        [0.056, 0.048, 0.042, 0.04],
+        [0.052, 0.046, 0.041, 0.04],
         9,
       ),
     );
-    // 三前一后：前趾绕过枝顶抓向枝的前下方
-    const front: [number, number][] = [
-      [-0.5, 1.95],
-      [-0.02, 2.2],
-      [0.46, 1.9],
-    ];
-    for (const [spread, wrap] of front) {
-      const toe = toePath(side, perch, footX, wrap, spread, 0.034, 14);
-      parts.push(taperedTube(toe.points, toe.radii, 7));
+    for (const spec of TOES) {
+      const toe = toePath(perch, foot, spec);
+      parts.push(taperedTube(toe.points, toe.radii, 7, toe.claw));
     }
-    const hallux = toePath(side, perch, footX, -1.5, 0.12, 0.03, 12);
-    parts.push(taperedTube(hallux.points, hallux.radii, 7));
   }
   const merged = mergeGeometries(parts)!;
   for (const g of parts) g.dispose();
+  merged.applyMatrix4(worldToLocal);
   return merged;
 }
 
 export function makeLegMaterial(lighting: LightingUniforms): ShaderMaterial {
-  const uniforms: Record<string, IUniform> = { uLegCol: { value: rgb('#43353a') } };
+  const uniforms: Record<string, IUniform> = {
+    uLegCol: { value: rgb('#231d20') },
+    uClawCol: { value: rgb('#0d0a0c') },
+  };
   return makeLitMaterial({
     lighting,
     side: DoubleSide,
     uniforms,
     fragmentPars: /* glsl */ `
 uniform vec3 uLegCol;
+uniform vec3 uClawCol;
 varying vec3 vObj;
+varying float vClaw;
 `,
     vertexPars: /* glsl */ `
+attribute float aClaw;
 varying vec3 vObj;
+varying float vClaw;
 `,
     vertexMain: /* glsl */ `
 	vObj = position;
+	vClaw = aClaw;
 `,
     surface: /* glsl */ `
 	Surf s;
 	// 皮肤上细碎的鳞片
 	float scale = snoise( vObj * 150.0 ) * 0.5 + 0.5;
-	s.albedo = uLegCol * ( 0.8 + 0.4 * scale );
+	// 爪尖是深黑色角质，带一点润泽的高光
+	s.albedo = mix( uLegCol * ( 0.8 + 0.4 * scale ), uClawCol, vClaw );
 	s.ao = 1.0;
 	s.wrap = 0.4;
 	s.specTint = vec3( 1.0 );
-	s.gloss = 0.35;
-	s.specAmt = 0.14;
+	s.gloss = mix( 0.35, 0.72, vClaw );
+	s.specAmt = mix( 0.14, 0.42, vClaw );
 	s.alpha = 1.0;
 	return s;
 `,
