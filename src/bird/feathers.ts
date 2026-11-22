@@ -104,7 +104,8 @@ export function frameRotation(d0: Vector3, n0: Vector3, d1: Vector3, n1: Vector3
 }
 
 /** 横向 9 列（中线两侧各 4 列），靠外缘更密一些以便弯出弧度。 */
-const COLS = [1, 0.75, 0.5, 0.25, 0, 0.25, 0.5, 0.75, 1];
+// 最外一列外伸到 1.16：名义羽缘在 0.97，羽缘羽小枝细齿（fringeDepth 最多 0.19）要长在羽缘以外，网格得先留出地方
+const COLS = [1.16, 0.75, 0.5, 0.25, 0, 0.25, 0.5, 0.75, 1.16];
 const ROWS = 18;
 
 function widthProfile(v: number, tipPos: number, tipPow: number): number {
@@ -411,6 +412,11 @@ varying float vSoft;
 varying vec3 vAxisW;
 varying float vExp;
 varying float vKind;
+// 正反面按翼平面判：收拢态翼面朝外（±x），满展态朝翼平面背侧（wingTail.ts 的 DORSAL_N，左右翅各自镜像），
+// 按当前 uOpen 混合后转到世界空间（随翅枢轴的扑翼 / 扫转一起转）
+uniform vec3 uDorsalFold;
+uniform vec3 uDorsalOpen;
+varying vec3 vDorsalW;
 `;
 
 const FEATHER_VERTEX_MAIN = /* glsl */ `
@@ -434,6 +440,7 @@ const FEATHER_VERTEX_MAIN = /* glsl */ `
 	nrm = vec3( nrm.x * fc + nrm.z * fs, nrm.y, -nrm.x * fs + nrm.z * fc );
 	axis = vec3( axis.x * fc + axis.z * fs, axis.y, -axis.x * fs + axis.z * fc );
 	vAxisW = normalize( mat3( modelMatrix ) * axis );
+	vDorsalW = normalize( mat3( modelMatrix ) * mix( uDorsalFold, uDorsalOpen, uOpen ) );
 `;
 
 const FEATHER_FRAGMENT_PARS = /* glsl */ `
@@ -451,6 +458,8 @@ varying float vExp;
 varying float vKind;
 // 收拢态的飞羽配色（展开后放回顶点色）
 uniform float uOpen;
+// 正反面按翼平面判的世界空间向量（顶点着色器算好传过来）
+varying vec3 vDorsalW;
 `;
 
 const FEATHER_SURFACE = /* glsl */ `
@@ -492,9 +501,10 @@ const FEATHER_SURFACE = /* glsl */ `
 	deep = mix( deep, vec3( 0.52, 0.49, 0.46 ), clamp( fringe, 0.0, 1.0 ) * 0.8 );
 	alb = mix( alb, deep, fold );
 	// 正反面：翼下（腹面）是银灰白的珍珠质感，深色羽轴清晰可读；翼上按羽色函数。
-	// 几何法线两翅都朝背侧（左翅连法线一起镜像），但镜像会翻转绕序，gl_FrontFacing 左右相反，
-	// 所以用未被翻转的世界法线和视线点积判；尾羽两面色相同
-	float dorsal = step( 0.0, dot( normalize( vWorldN ), V ) );
+	// 按翼平面的背腹朝向判，不按羽面法线：初级飞羽带弧度后，羽尖曲面在掠射角下 dot(N, V) 会翻号，把腹面的银白
+	// 画到背面的黑褐羽尖上（"白油漆尖"）。收拢态翼面朝外（±x）、满展态朝翼平面背侧，按 uOpen 过渡，随枢轴一起转；
+	// 几何法线两翅都朝背侧且镜像翻转绕序（gl_FrontFacing 左右相反），这两个判法都不可靠。尾羽两面色相同
+	float dorsal = step( 0.0, dot( normalize( vDorsalW ), V ) );
 	dorsal = max( dorsal, step( 2.5, vKind ) );
 	vec3 vent = mix( uVentPrim, uVentSec, step( 0.5, vKind ) );
 	// 腹面内翈（靠身体一侧）略暗一点，羽轴一条深色细线
@@ -505,8 +515,17 @@ const FEATHER_SURFACE = /* glsl */ `
 	float fray = snoise( vec3( vPhy.y * 55.0, vSize.x * 37.0, 3.0 ) ) * 0.5 + 0.5;
 	float fray2 = snoise( vec3( vPhy.y * 150.0, vSize.x * 91.0, 7.0 ) ) * 0.5 + 0.5;
 	float wear = fray * 0.6 + fray2 * 0.4;
-	float lim = mix( 0.965 + 0.035 * wear, 0.975 + 0.025 * wear, vSoft );
-	float aa = fwidth( edge ) * ( 1.0 + 2.5 * vSoft ) + 1e-5;
+	// 羽缘羽小枝丝毛（soft barb fringe）：外缘不再是 1 px 的刀切边。沿羽小枝相位（与羽轴约 50°、约 0.6 mm 一根）的
+	// 细齿状透空过渡——齿深基部绒羽段最大、中段最浅、羽尖外缘再放一点；齿细过一个像素时按导数淡出，不会闪成噪点。
+	// 齿长在名义羽缘（0.97）以外、网格外伸列（1.16）以内，alphaToCoverage 把它渲染成毛茸茸的纤维边
+	float barbPh = ( vPhy.y - 1.15 * abs( vPhy.x ) ) * 105.0 + ( bundle - 0.5 ) * 6.0;
+	float barb = 0.5 + 0.5 * sin( barbPh * 6.2831853 );
+	float barbFw = fwidth( barbPh );
+	float barbAtten = 1.0 - smoothstep( 0.45, 1.1, barbFw );
+	float fringeDepth = ( 0.19 * ( 1.0 - smoothstep( 0.15, 0.5, along ) ) + 0.08 + 0.12 * smoothstep( 0.6, 0.95, along ) ) * barbAtten;
+	// 齿深随羽小枝成束（bundle）忽长忽短，边缘是毛茸茸的一圈细丝，不是等距的锯片
+	float lim = mix( 0.965 + 0.035 * wear, 0.975 + 0.025 * wear, vSoft ) + fringeDepth * barb * ( 0.6 + 0.8 * bundle );
+	float aa = fwidth( edge ) * ( 1.0 + 2.5 * vSoft ) + 1e-5 + barbFw * fringeDepth * 0.2;
 	float alpha = 1.0 - smoothstep( lim - aa, lim + aa, edge );
 	Surf s;
 	s.alpha = alpha;
@@ -516,11 +535,14 @@ const FEATHER_SURFACE = /* glsl */ `
 	// 不然露出来的整截都是亮的，一片片叠压读不出来
 	float aoRoot = smoothstep( 0.0, 0.55, along );
 	float aoShingle = smoothstep( vExp - 0.06, vExp + 0.22, along );
-	s.ao = mix( mix( 0.55, 1.0, aoRoot ), mix( 0.62, 1.0, aoShingle ), step( 0.01, vExp ) );
-	s.wrap = 0.35;
+	float aoFold = mix( mix( 0.55, 1.0, aoRoot ), mix( 0.62, 1.0, aoShingle ), step( 0.01, vExp ) );
+	// 翼下（腹面）没有深黑的根部暗沟：叠压 AO 只压到 0.86，漫反射包裹度 0.65、高光压低——翼下飞羽和纯白的
+	// 翼臂绒毛垫柔和地融成一片，不是一排灰色铁皮台阶
+	s.ao = mix( mix( 0.86, 1.0, aoRoot ), aoFold, dorsal );
+	s.wrap = mix( 0.65, 0.35, dorsal );
 	s.specTint = mix( vec3( 1.0 ), vec3( 0.8, 0.85, 1.0 ), 1.0 - dorsal );
-	s.gloss = mix( 0.68, 0.5, 1.0 - dorsal );
-	s.specAmt = mix( mix( 0.04, 0.05, 1.0 - smoothstep( 0.05, 0.25, lum ) ), 0.07, 1.0 - dorsal );
+	s.gloss = mix( 0.68, 0.42, 1.0 - dorsal );
+	s.specAmt = mix( mix( 0.04, 0.05, 1.0 - smoothstep( 0.05, 0.25, lum ) ), 0.03, 1.0 - dorsal );
 	return s;
 `;
 
@@ -544,7 +566,11 @@ const FEATHER_EXTRA_LIGHT = /* glsl */ `
 	return spec + glow;
 `;
 
-export function makeFeatherMaterial(lighting: LightingUniforms, rig: WingRigUniforms): ShaderMaterial {
+/**
+ * 羽片材质。side = 1 右翅 / -1 左翅（尾羽传 1），dorsalOpen 是满展态翼平面的背侧法线（枢轴坐标，已按左右镜像，
+ * wingTail.ts 的 wingDorsalN）：正反面按它判，不按会随羽尖弧度翻号的羽面法线。
+ */
+export function makeFeatherMaterial(lighting: LightingUniforms, rig: WingRigUniforms, side: 1 | -1 = 1, dorsalOpen?: Vector3): ShaderMaterial {
   return makeLitMaterial({
     lighting,
     side: DoubleSide,
@@ -552,6 +578,8 @@ export function makeFeatherMaterial(lighting: LightingUniforms, rig: WingRigUnif
     uniforms: {
       uSpread: { value: 0 },
       uOpen: rig.uOpen,
+      uDorsalFold: { value: new Vector3(side, 0, 0) },
+      uDorsalOpen: { value: dorsalOpen ?? new Vector3(0, 1, 0) },
       uVentPrim: { value: rgb('#c3c2c9') },
       uVentSec: { value: rgb('#ebe6dc') },
       uVentShaft: { value: rgb('#5c5153') },

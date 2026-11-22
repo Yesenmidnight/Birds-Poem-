@@ -422,8 +422,18 @@ const cosS = Math.cos(WING_SWEEP);
 const SPAN_U = new Vector3(cosD * cosS, Math.sin(WING_DIHEDRAL), -cosD * sinS);
 /** 弦向（向前） */
 const CHORD_V = new Vector3(sinS, 0, cosS);
-/** 翼平面背侧法线 */
-const DORSAL_N = new Vector3().crossVectors(CHORD_V, SPAN_U);
+/** 翼平面背侧法线（羽片材质按它判正反面，不按会随羽尖弧度翻号的羽面法线） */
+export const DORSAL_N = new Vector3().crossVectors(CHORD_V, SPAN_U);
+
+/** 满展态翼平面的背侧法线（枢轴坐标，按左右翅镜像）：羽片材质按它判正反面。 */
+export function wingDorsalN(side: 1 | -1): Vector3 {
+  return DORSAL_N.clone().multiply(new Vector3(side, 1, 1));
+}
+
+/** 翼臂绒毛垫配色用的翼展方向（枢轴坐标，按左右翅镜像）。 */
+export function wingArmSpan(side: 1 | -1): Vector3 {
+  return SPAN_U.clone().multiply(new Vector3(side, 1, 1));
+}
 
 /** 翼平面里的点 (u 向外, v 向前, n 朝背侧) → 枢轴坐标。 */
 function wingPlane(u: number, v: number, n = 0): Vector3 {
@@ -937,4 +947,163 @@ export function buildTail(p: BodyParams): FeatherSet {
   const geometry = batch.build();
   geometry.translate(-base.x, -base.y, -base.z);
   return { geometry, count: batch.count, placements: [] };
+}
+
+// ---------------------------------------------------------------------------------------------
+// 翼臂绒毛垫：满展态肩→肘→腕→腕掌根的流线型肉翼包络（右翅、枢轴坐标），给躯干同款的多壳层 Fur 当底面。
+// 鸟翅的前半幅（前翼膜、腋羽、翼下覆羽、翼上小中覆羽）本来就是长满厚绒毛的立体肉翼，只有后半幅才是伸出的飞羽：
+// 展开时它从胸腋无缝伸出去，腹面 + 整个前缘包边是纯白绒毛，从下方盖住次级 / 初级飞羽生硬的插片根部；
+// 背侧只在弦向前 36% 隆起一道圆润的炭黑脊（小 / 中覆羽区），大覆羽、初级覆羽的根（离面 0.03~0.04）仍露在脊外面。
+// 收拢态由 uOpen 控制内收（顶点着色器把整块垫按 smoothstep(0.25, 0.6, uOpen) 缩回枢轴、毛长同步压到 0）。
+// ---------------------------------------------------------------------------------------------
+/** 翼臂各站（t = 0 肩、1 肘、2 腕、3 腕掌根）的截面参数：弦向前伸 l、向后伸 c、背脊高、腹垫厚。 */
+const ARM_KEYS = {
+  lead: [0.5, 0.5, 0.45, 0.28],
+  trail: [0.5, 0.42, 0.36, 0.18],
+  top: [0.16, 0.15, 0.13, 0.06],
+  bot: [0.22, 0.19, 0.15, 0.07],
+};
+function armKey(vals: number[], t: number): number {
+  const c = clamp(t, 0, 3);
+  const i = Math.min(2, Math.floor(c));
+  return lerp(vals[i], vals[i + 1], smooth(i, i + 1, c));
+}
+/** 背脊只在弦向 64%~100% 之间隆起（正弦的 0.7 次幂：前缘处切线竖直，鼻部圆润）。 */
+// 正弦先夹到 ≥ 0 再开 0.7 次幂：前缘处 (1 - 0.64) / 0.36 浮点会略大于 1，sin 变成 -1e-16，负数开分数次幂就是 NaN
+const powS = (x: number, p: number): number => Math.pow(Math.max(x, 0), p);
+function armRidge(xi: number): number {
+  return xi > 0.64 ? powS(Math.sin((Math.PI * (xi - 0.64)) / 0.36), 0.7) : 0;
+}
+
+export function buildWingArm(side: 1 | -1 = 1): BufferGeometry {
+  const NT = 44;
+  const NK = 32;
+  const T0 = -0.14;
+  const T1 = 3.0;
+  const E: [number, number] = [JOINT_E[0], JOINT_E[1]];
+  const W: [number, number] = [JOINT_W[0], JOINT_W[1]];
+  const M: [number, number] = [JOINT_M[0], JOINT_M[1]];
+  const norm2 = (x: number, y: number): [number, number] => {
+    const l = Math.hypot(x, y) || 1;
+    return [x / l, y / l];
+  };
+  const d0 = norm2(E[0], E[1]);
+  const d1 = norm2(W[0] - E[0], W[1] - E[1]);
+  const d2 = norm2(M[0] - W[0], M[1] - W[1]);
+  const mix2 = (a: [number, number], b: [number, number], t: number): [number, number] => norm2(lerp(a[0], b[0], t), lerp(a[1], b[1], t));
+  const chainPoint = (t: number): [number, number] => {
+    if (t <= 1) return [E[0] * t, E[1] * t];
+    if (t <= 2) return [lerp(E[0], W[0], t - 1), lerp(E[1], W[1], t - 1)];
+    return [lerp(W[0], M[0], t - 2), lerp(W[1], M[1], t - 2)];
+  };
+  const chainTangent = (t: number): [number, number] => {
+    if (t < 0.7) return d0;
+    if (t < 1.3) return mix2(d0, d1, smooth(0.7, 1.3, t));
+    if (t < 1.7) return d1;
+    if (t < 2.3) return mix2(d1, d2, smooth(1.7, 2.3, t));
+    return d2;
+  };
+  const pos: number[] = [];
+  const flow: number[] = [];
+  const param: number[] = [];
+  const idx: number[] = [];
+  const v = new Vector3();
+  for (let i = 0; i <= NT; i++) {
+    const t = lerp(T0, T1, i / NT);
+    const [bu, bv] = chainPoint(t);
+    const [tu, tv] = chainTangent(t);
+    // 弦向"前"：把切线逆时针转 90°（肱骨段切线 (1, -0.15) → 前向 (0.15, 1)，朝 +v）
+    const ku = -tv;
+    const kv = tu;
+    // 两端圆头：肩端缩进躯干里，腕掌根收成圆尖
+    const cap = smooth(T0, 0.12, t) * (1 - smooth(2.7, T1, t));
+    const lead = armKey(ARM_KEYS.lead, t) * cap;
+    const trail = armKey(ARM_KEYS.trail, t) * cap;
+    const hTop = armKey(ARM_KEYS.top, t) * cap;
+    const hBot = armKey(ARM_KEYS.bot, t) * cap;
+    const tipFade = lerp(1, 0.7, smooth(2.2, 3, t));
+    for (let k = 0; k < NK; k++) {
+      const top = k < NK / 2;
+      // 背侧从弦向 1（前缘）到 0（后缘），腹侧再从 0 回到 1：前缘、后缘两点上下共用，截面闭合
+      const xi = top ? 1 - (2 * k) / NK : (2 * (k - NK / 2)) / NK;
+      const w = -trail + xi * (lead + trail);
+      const ridge = armRidge(xi);
+      const n = top
+        ? hTop * ridge - 0.012 * powS(Math.sin(Math.PI * xi), 0.7) * (1 - ridge)
+        : -hBot * powS(Math.sin(Math.PI * xi), 0.8);
+      const uu = bu + ku * w;
+      const vv = bv + kv * w;
+      v.copy(wingPlane(uu, vv, n));
+      pos.push(v.x, v.y, v.z);
+      // 毛流：顺翼展朝腕部流，腹面后半段顺弦向朝后缘流
+      const rear = (top ? 0.25 : 1.8) * (1 - xi);
+      const f = wingPlane(tu - ku * rear, tv - kv * rear, 0).normalize();
+      flow.push(f.x, f.y, f.z);
+      // 毛长系数：背侧只在脊上长毛（大覆羽根 / 飞羽根上面不长，免得盖住羽片），腹面全长，腕掌根略短
+      // 背脊靠前缘的一截（ξ > 0.86）毛短一半：立着的毛丝从下方看会成一排戳出前缘的梳子齿
+      const furK = top ? smooth(0.64, 0.78, xi) * (1 - 0.6 * smooth(0.8, 0.92, xi)) * tipFade : tipFade * (1 + 0.4 * (1 - smooth(0.1, 0.4, xi)));
+      // 背腹配色权重：背脊是炭黑，前缘包边和腹面纯白
+      // 前缘包边纯白：背脊的炭黑只占脊的后半段（ξ 0.56~0.96），鼻部和脊顶前缘是白——从下方看前缘不再漏黑；
+      // 脊顶靠前缘的一截毛压短（0.4），立着的黑毛丝不会从下方戳出前缘成梳子齿，从上看前缘仍是炭黑
+      const dorsal = top ? smooth(0.56, 0.74, xi) * (1 - smooth(0.88, 0.96, xi)) : 0;
+      param.push(furK, 0, dorsal);
+    }
+  }
+  for (let i = 0; i < NT; i++) {
+    for (let k = 0; k < NK; k++) {
+      const a = i * NK + k;
+      const b = a + NK;
+      const c = i * NK + ((k + 1) % NK);
+      const d = b - k + ((k + 1) % NK);
+      idx.push(a, b, c, c, b, d);
+    }
+  }
+  const g = new BufferGeometry();
+  g.setAttribute('position', new Float32BufferAttribute(pos, 3));
+  g.setAttribute('aFlow', new Float32BufferAttribute(flow, 3));
+  g.setAttribute('aParam', new Float32BufferAttribute(param, 3));
+  const n = pos.length / 3;
+  g.setAttribute('aW', new Float32BufferAttribute(new Float32Array(n * 2), 2));
+  g.setAttribute('aRegion', new Float32BufferAttribute(new Float32Array(n * 4), 4));
+  g.setAttribute('aPress', new Float32BufferAttribute(param.filter((_, i) => i % 3 === 0), 1));
+  g.setAttribute('aJaw', new Float32BufferAttribute(new Float32Array(n), 1));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  // 绕序按外向核对一遍：法线要背离截面中心（枢轴坐标里各站的骨点）
+  const nrm = g.attributes.normal as BufferAttribute;
+  let dotSum = 0;
+  for (let i = 0; i <= NT; i++) {
+    const t = lerp(T0, T1, i / NT);
+    const [bu, bv] = chainPoint(t);
+    const c = wingPlane(bu, bv, -0.05);
+    for (let k = 0; k < NK; k++) {
+      const j = i * NK + k;
+      v.set(pos[j * 3] - c.x, pos[j * 3 + 1] - c.y, pos[j * 3 + 2] - c.z);
+      dotSum += v.x * nrm.getX(j) + v.y * nrm.getY(j) + v.z * nrm.getZ(j);
+    }
+  }
+  if (dotSum < 0) {
+    const ix = g.index!.array as Uint32Array;
+    for (let t = 0; t < ix.length; t += 3) {
+      const tmp = ix[t + 1];
+      ix[t + 1] = ix[t + 2];
+      ix[t + 2] = tmp;
+    }
+    g.computeVertexNormals();
+  }
+  if (side < 0) {
+    // 左翅：x 镜像，毛流同步镜像，绕序反过来让法线仍朝外
+    g.scale(-1, 1, 1);
+    const fl = g.attributes.aFlow as BufferAttribute;
+    for (let j = 0; j < n; j++) fl.setX(j, -fl.getX(j));
+    const ix = g.index!.array as Uint32Array;
+    for (let t = 0; t < ix.length; t += 3) {
+      const tmp = ix[t + 1];
+      ix[t + 1] = ix[t + 2];
+      ix[t + 2] = tmp;
+    }
+    g.computeVertexNormals();
+  }
+  g.computeBoundingSphere();
+  return g;
 }

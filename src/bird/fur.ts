@@ -10,7 +10,7 @@ import {
   Vector4,
   type BufferGeometry,
   type IUniform,
-  type ShaderMaterial,
+  ShaderMaterial,
 } from 'three';
 import { NOISE_GLSL } from '../glsl/noise';
 import { makeLitMaterial, rgb, type LightingUniforms } from '../glsl/lit';
@@ -264,10 +264,67 @@ const FUR_EXTRA_LIGHT = /* glsl */ `
 	return s.albedo * trans + rim + sheen * mix( vec3( 0.7, 0.8, 1.0 ), s.albedo, 0.85 );
 `;
 
+/**
+ * 翼臂绒毛垫（wingTail.ts 的 buildWingArm 底面）专用的增量：满展态挂在翅枢轴下，收拢时随 uArmOpen 把整块垫缩回
+ * 枢轴、毛长同步压到 0（收拢态一点不露）；配色不走 plumage()（那是躯干的分区），而是背脊炭黑 / 前缘包边 + 腹面纯白，
+ * 靠肩内侧过渡到肩羽的奶白。躯干绒毛用的着色器字符串完全不动，只有 arm 实例才用下面这些替换过的版本。
+ */
+const ARM_RETRACT = 'smoothstep( 0.25, 0.6, uArmOpen )';
+const ARM_VERTEX_PARS = FUR_VERTEX_PARS + /* glsl */ `
+uniform float uArmOpen;
+`;
+const ARM_VERTEX_MAIN = FUR_VERTEX_MAIN.replace(
+  'vec3 base = ( sk * vec4( position, 1.0 ) ).xyz;',
+  'vec3 base = ( sk * vec4( position, 1.0 ) ).xyz * ' + ARM_RETRACT + ';',
+).replace(
+  'furK = mix( furK, min( furK, 0.3 ), aJaw * smoothstep( 0.04, 0.2, uJawOpen ) );',
+  'furK = mix( furK, min( furK, 0.3 ), aJaw * smoothstep( 0.04, 0.2, uJawOpen ) );\n\tfurK *= ' + ARM_RETRACT + ';',
+);
+if (ARM_VERTEX_MAIN === FUR_VERTEX_MAIN) throw new Error('fur.ts: 翼臂顶点着色器的替换锚点失效');
+const ARM_FRAGMENT_PARS = FUR_FRAGMENT_PARS + /* glsl */ `
+uniform vec3 uColArmDorsal;
+uniform vec3 uColArmShoulder;
+uniform vec3 uArmSpan;
+// 翼臂绒毛垫的配色：背腹权重是底面烘进的 aParam.z（背脊炭黑、前缘包边和腹面纯白），
+// 背脊靠肩内侧（沿翼展 0.05~0.8）从肩羽的奶白过渡到炭黑，分界线用噪声打散
+vec3 armPlumage( vec3 p, float dorsal ) {
+	float span = dot( p, uArmSpan );
+	vec3 top = mix( uColArmShoulder, uColArmDorsal, smoothstep( 0.05, 0.8, span ) );
+	float d = smoothstep( 0.3, 0.7, dorsal + ( snoise( p * 14.0 ) - 0.5 ) * 0.3 );
+	return mix( uColWhite, top, d );
+}
+`;
+const ARM_SURFACE = FUR_SURFACE.replace(
+  'plumage( vRestPos, normalize( vRestN ), vParam.z, vBoneW )',
+  'armPlumage( vRestPos, vParam.z )',
+);
+if (ARM_SURFACE === FUR_SURFACE) throw new Error('fur.ts: 翼臂片元着色器的替换锚点失效');
+
+/** 翼臂绒毛垫的"皮肤"投影用：和壳层同一套内收缩放，收拢态的影子不会留下一整只展开的翼臂。 */
+export function makeFurArmDepth(open: IUniform): ShaderMaterial {
+  return new ShaderMaterial({
+    uniforms: { uArmOpen: open },
+    vertexShader: /* glsl */ `
+uniform float uArmOpen;
+void main() {
+	gl_Position = projectionMatrix * modelViewMatrix * vec4( position * ${ARM_RETRACT}, 1.0 );
+}
+`,
+    fragmentShader: /* glsl */ `
+#include <packing>
+void main() {
+	gl_FragColor = packDepthToRGBA( gl_FragCoord.z );
+}
+`,
+  });
+}
+
 export class Fur {
   readonly group = new Group();
   readonly uniforms: Record<string, IUniform>;
   readonly trianglesPerShell: number;
+  /** 最里层的实心"皮肤"（翼臂垫要给它换投影深度材质）。 */
+  readonly core: Mesh;
 
   private readonly shells: Mesh<InstancedBufferGeometry, ShaderMaterial>;
   private readonly maxShells: number;
@@ -277,6 +334,7 @@ export class Fur {
     lighting: LightingUniforms,
     settings: FurSettings = FUR_DEFAULTS,
     maxShells = 96,
+    arm?: { open: IUniform; span: Vector3 },
   ) {
     this.maxShells = maxShells;
     this.trianglesPerShell = (base.index?.count ?? 0) / 3;
@@ -307,6 +365,13 @@ export class Fur {
       uColCrown: { value: rgb('#f0dcd2') },
       uColSkin: { value: rgb('#4a3c38') },
     };
+    if (arm) {
+      this.uniforms.uArmOpen = arm.open;
+      this.uniforms.uArmSpan = { value: arm.span };
+      // 翼上背面前缘（小 / 中覆羽区）的深暖炭黑，和鞍领同一色系；靠肩内侧过渡到肩羽下半段的奶白
+      this.uniforms.uColArmDorsal = { value: rgb('#2a2528') };
+      this.uniforms.uColArmShoulder = { value: rgb('#e7d5ca') };
+    }
 
     const material = (core: boolean): ShaderMaterial =>
       makeLitMaterial({
@@ -315,10 +380,10 @@ export class Fur {
         side: FrontSide,
         alphaToCoverage: !core,
         defines: core ? { CORE_PASS: '' } : undefined,
-        vertexPars: FUR_VERTEX_PARS,
-        vertexMain: FUR_VERTEX_MAIN,
-        fragmentPars: FUR_FRAGMENT_PARS,
-        surface: FUR_SURFACE,
+        vertexPars: arm ? ARM_VERTEX_PARS : FUR_VERTEX_PARS,
+        vertexMain: arm ? ARM_VERTEX_MAIN : FUR_VERTEX_MAIN,
+        fragmentPars: arm ? ARM_FRAGMENT_PARS : FUR_FRAGMENT_PARS,
+        surface: arm ? ARM_SURFACE : FUR_SURFACE,
         extraLight: core ? undefined : FUR_EXTRA_LIGHT,
       });
 
@@ -326,6 +391,7 @@ export class Fur {
     const coreMesh = new Mesh(base, material(true));
     coreMesh.castShadow = true;
     coreMesh.receiveShadow = true;
+    this.core = coreMesh;
     this.group.add(coreMesh);
 
     // 外面叠 maxShells 层壳，实际画多少层由 instanceCount 决定

@@ -13,9 +13,9 @@ import {
 import type { LightingUniforms } from '../glsl/lit';
 import { LONG_TAILED_TIT, type BodyParams } from './bodySdf';
 import { buildBody } from './body';
-import { Fur } from './fur';
+import { FUR_DEFAULTS, Fur, makeFurArmDepth, type FurSettings } from './fur';
 import { makeFeatherMaterial, makeWingDepthMaterial, type WingRigUniforms } from './feathers';
-import { WING_PIVOT, WingRig, buildTail, buildWing, buildWingPanel, makeWingPanelMaterial } from './wingTail';
+import { WING_PIVOT, WingRig, buildTail, buildWing, buildWingArm, buildWingPanel, makeWingPanelMaterial, wingArmSpan, wingDorsalN } from './wingTail';
 import {
   LID_GAP_LOWER,
   LID_GAP_UPPER,
@@ -87,6 +87,12 @@ interface EyeRig {
  * 所有部件都在鸟的局部坐标里生成，整体再摆到栖枝上。
  * 可动部分各自挂在枢轴下：上下喙绕嘴根铰链、眼睑绕眼角横轴、双翅绕翅根、尾羽绕尾基。
  */
+/**
+ * 翼臂绒毛垫的绒毛设置：和躯干同一套壳层机制，层数少得多（18 层：翼展方向没有躯干那么多曲率变化），
+ * 毛长略短于躯干（0.24），展开时和胸腋的白毛连成一片
+ */
+const WING_ARM_FUR: FurSettings = { ...FUR_DEFAULTS, shellCount: 18, furLen: 0.24 };
+
 export class Bird {
   readonly group = new Group();
   readonly fur: Fur;
@@ -116,6 +122,8 @@ export class Bird {
   private readonly wingPivots: Record<'left' | 'right', Group> = { left: new Group(), right: new Group() };
   /** 可展翅：羽片 / 底壳 / 阴影深度材质共用每只翅各自的一份 open uniform。 */
   private readonly wingRigs: Record<'left' | 'right', WingRig> = { left: new WingRig(-1), right: new WingRig(1) };
+  /** 翼臂绒毛垫（满展态的肩→肘→腕→腕掌包络）：挂在各自的翅枢轴下，跟着扑翼 / 扫转一起动。 */
+  private readonly wingArms = {} as Record<'left' | 'right', Fur>;
   private readonly tailPivot = new Group();
   private readonly tailSpread: IUniform<number>;
   /** 颈骨枢轴 ≈ 颈部椭球中心；头骨枢轴 = 头部椭球中心（头球的曲率中心），构造时从 params 派生。 */
@@ -152,7 +160,7 @@ export class Bird {
       const rig = this.wingRigs[side];
       const wing = buildWing(params, 5, s);
       featherCount += wing.count;
-      const mesh = new Mesh(wing.geometry, makeFeatherMaterial(lighting, rig.uniforms));
+      const mesh = new Mesh(wing.geometry, makeFeatherMaterial(lighting, rig.uniforms, s, wingDorsalN(s)));
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       // 阴影用的深度材质走同一套顶点变形，展开的翅投出去的影子才是展开的
@@ -163,6 +171,12 @@ export class Bird {
       const pivot = this.wingPivots[side];
       pivot.position.set(s * WING_PIVOT.x, WING_PIVOT.y, WING_PIVOT.z);
       pivot.add(panel, mesh);
+      // 翼臂绒毛垫：展开时从胸腋伸出去，腹面 + 前缘包边是纯白绒毛盖住飞羽根部，背脊是炭黑绒羽（小 / 中覆羽区）；
+      // 收拢态随 uOpen 缩回枢轴、毛长压到 0，影子也走同一套内收
+      const armFur = new Fur(buildWingArm(s), lighting, WING_ARM_FUR, 24, { open: rig.uniforms.uOpen, span: wingArmSpan(s) });
+      armFur.core.customDepthMaterial = makeFurArmDepth(rig.uniforms.uOpen);
+      pivot.add(armFur.group);
+      this.wingArms[side] = armFur;
       this.breathSpace.add(pivot);
     }
     const tail = buildTail(params);
@@ -386,7 +400,10 @@ export class Bird {
       const sign = s === 'right' ? 1 : -1;
       const g = this.wingPivots[s];
       g.rotation.set(pose.twist ?? 0, sign * (pose.sweep ?? 0), sign * (pose.flap ?? 0));
-      this.wingRigs[s].set(pose.open ?? 0);
+      const open = pose.open ?? 0;
+      this.wingRigs[s].set(open);
+      // 翼臂绒毛垫在 open ≤ 0.2 时已经缩成一个点，整组关掉最干净
+      if (this.wingArms[s]) this.wingArms[s].group.visible = open > 0.2;
     }
   }
 
