@@ -31,8 +31,8 @@ export function restPose(): Pose {
     eye: { lidClose: 0, squint: 0, nict: 0 },
     jaw: 0,
     wing: {
-      left: { lift: 0, sweep: 0, twist: 0 },
-      right: { lift: 0, sweep: 0, twist: 0 },
+      left: { open: 0, flap: 0, sweep: 0, twist: 0 },
+      right: { open: 0, flap: 0, sweep: 0, twist: 0 },
     },
     tail: { pitch: 0, yaw: 0, roll: 0, spread: 0 },
     breath: 0,
@@ -46,7 +46,8 @@ export function resetPose(p: Pose): void {
   p.eye.lidClose = p.eye.squint = p.eye.nict = 0;
   p.jaw = 0;
   for (const side of ['left', 'right'] as const) {
-    p.wing[side].lift = 0;
+    p.wing[side].open = 0;
+    p.wing[side].flap = 0;
     p.wing[side].sweep = 0;
     p.wing[side].twist = 0;
   }

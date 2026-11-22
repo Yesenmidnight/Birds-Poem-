@@ -47,6 +47,7 @@ export function buildBody(params: BodyParams = LONG_TAILED_TIT, cell = 0.055): B
   const region = new Float32Array(count * 4);
   const weights = new Float32Array(count * 2);
   const param = new Float32Array(count * 3);
+  const press = new Float32Array(count);
 
   const g = [0, 0, 0];
   const [bx, by, bz] = params.beakBase;
@@ -188,6 +189,8 @@ export function buildBody(params: BodyParams = LONG_TAILED_TIT, cell = 0.055): B
     const drape = Math.max(smoothstep(-0.1, 0.4, ny), smoothstep(0.3, 0.6, nz));
     const inset = lerp(WING_FUR_UNDER, WING_FUR_INSET, drape);
     const panel = smoothstep(0.15, 0.4, Math.abs(nx)) * smoothstep(inset, inset + 0.15, cover);
+    // 被翅压住之前的毛长单独存进 aPress：翅展开后着色器按展翅度把它放回全长（见 fur.ts 的 uWingOpen）
+    press.set([furLen], i);
     furLen = furLen * (1 - panel) + 0.22 * panel;
     // 腹底靠近腿的位置也短一些
     furLen *= 0.7 + 0.3 * smoothstep(0.35, 0.7, y);
@@ -220,6 +223,7 @@ export function buildBody(params: BodyParams = LONG_TAILED_TIT, cell = 0.055): B
   geometry.setAttribute('aRegion', new BufferAttribute(region, 4));
   geometry.setAttribute('aW', new BufferAttribute(weights, 2));
   geometry.setAttribute('aParam', new BufferAttribute(param, 3));
+  geometry.setAttribute('aPress', new BufferAttribute(press, 1));
   geometry.setIndex(new BufferAttribute(net.indices, 1));
   geometry.computeBoundingSphere();
 

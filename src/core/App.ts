@@ -274,6 +274,7 @@ export class App {
       ['瞬膜', 'nict'],
       ['甩尾', 'tailFlick'],
       ['弹翅', 'wingFlick'],
+      ['展翅扑翼', 'spread'],
     ];
     for (const [label, kind] of cueList) p.button(cues, label, () => this.motion.cue(kind));
     ml.appendChild(cues);
@@ -293,7 +294,8 @@ export class App {
     p.slider(mo, '尾扇开', 0, 100, 1, 0, (v) => ((tail.spread = (v / 100) * 0.6), applyTail()), pct);
     const wing: WingPose = {};
     const applyWing = (): void => this.bird.setWingPose('both', wing);
-    p.slider(mo, '翅上抬', 0, 70, 1, 0, (v) => ((wing.lift = (v * Math.PI) / 180), applyWing()), deg);
+    p.slider(mo, '展翅度', 0, 100, 1, 0, (v) => ((wing.open = v / 100), applyWing()), pct);
+    p.slider(mo, '扑翼角', -40, 80, 1, 0, (v) => ((wing.flap = (v * Math.PI) / 180), applyWing()), deg);
     p.slider(mo, '翅后扫', 0, 70, 1, 0, (v) => ((wing.sweep = (v * Math.PI) / 180), applyWing()), deg);
 
     const pt = p.section('部件');

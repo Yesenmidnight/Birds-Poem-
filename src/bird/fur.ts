@@ -5,6 +5,7 @@ import {
   InstancedBufferGeometry,
   Matrix4,
   Mesh,
+  Vector2,
   Vector3,
   Vector4,
   type BufferGeometry,
@@ -65,6 +66,10 @@ attribute vec3 aFlow;
 attribute vec2 aW;
 attribute vec4 aRegion;
 attribute vec3 aParam;
+// 被收拢的翅压住之前的毛长系数；翅展开后按 uWingOpen 恢复
+attribute float aPress;
+// 左右翅的展翅度（x = 右翅，y = 左翅）
+uniform vec2 uWingOpen;
 attribute float aLayer;
 uniform mat4 uBones[2];
 uniform float uShellCount;
@@ -108,7 +113,10 @@ const FUR_VERTEX_MAIN = /* glsl */ `
 	// 起伏只看空间坐标，相邻顶点才会连续——绝不能混进逐顶点的随机数
 	float sc = snoise( position * uScallop );
 	float clumpAmt = sc * 0.5 + 0.5;
-	float len = uFurLen * aParam.x * ( 0.72 + 0.56 * clumpAmt ) * mix( 0.78, 1.32, uFluff );
+	// 翅展开 0.25~0.7 之间，翼下压短的绒毛平滑回弹到全长；收拢态（uWingOpen = 0）和原来完全一样
+	float wingOpen = position.x >= 0.0 ? uWingOpen.x : uWingOpen.y;
+	float furK = mix( aParam.x, aPress, smoothstep( 0.25, 0.7, wingOpen ) );
+	float len = uFurLen * furK * ( 0.72 + 0.56 * clumpAmt ) * mix( 0.78, 1.32, uFluff );
 	// 毛长的细碎起伏同样是空间连续的低频噪声
 	len *= 0.82 + 0.36 * ( snoise( position * 5.0 + 3.1 ) * 0.5 + 0.5 );
 
@@ -169,7 +177,7 @@ const FUR_VERTEX_MAIN = /* glsl */ `
 	vRestPos = position;
 	vRestN = normal;
 	vRestFlow = aFlow;
-	vParam = aParam;
+	vParam = vec3( furK, aParam.y, aParam.z );
 	vT = t;
 	vClump = clumpAmt;
 	vStrandT = normalize( mat3( modelMatrix ) * ( nL * cos( phi ) + T * sin( phi ) ) );
@@ -276,6 +284,7 @@ export class Fur {
       uSheen: { value: settings.sheen },
       uTranslucency: { value: settings.translucency },
       uBones: { value: [new Matrix4(), new Matrix4()] },
+      uWingOpen: { value: new Vector2(0, 0) },
       uStroke: { value: Array.from({ length: MAX_STROKES }, () => new Vector4(0, 0, 0, 0.3)) },
       uStrokeDir: { value: Array.from({ length: MAX_STROKES }, () => new Vector3(0, 0, -1)) },
       uStrokeAge: { value: new Array<number>(MAX_STROKES).fill(0) },

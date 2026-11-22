@@ -275,7 +275,7 @@ export class FidgetLayer extends MotionLayer {
   private tailAmp = 0.35;
   private tailYaw = 0;
   private wingT = Infinity;
-  private wingAmp = 0.65;
+  private wingOpen = 0.11;
   private seenSaccades = 0;
   private seenTiltEnds = 0;
 
@@ -288,7 +288,7 @@ export class FidgetLayer extends MotionLayer {
 
   cueWing(ctx: MotionContext, events: MotionEvents): void {
     this.wingT = 0;
-    this.wingAmp = lerp(0.55, 0.8, ctx.rng());
+    this.wingOpen = lerp(0.08, 0.14, ctx.rng());
     events.wingFlicks++;
   }
 
@@ -324,17 +324,61 @@ export class FidgetLayer extends MotionLayer {
     }
     if (this.wingT < Infinity) {
       this.wingT += dt;
-      // 翅绕肩关节整片往外张开（lift 0.55~0.8 rad），翅尖往背上方挑（twist），翅尖微微向外展（sweep），
-      // 90~130 ms 干脆收拢。rebound 取 0：翅只往上、不压回体表以内——翼下绒毛只比羽片矮一点点，
-      // 往里压一丝就会从黑羽上冒出来
+      // 弹翅 = 翅微微张开（open 0.08~0.14：肩和腕仍埋在毛里，只有中后段与翅尖松开）配合后段往背上方轻抬，
+      // 翅尖微挑（twist）、微微向外展（sweep），90~130 ms 干脆收拢。
+      // 以前是整片翅绕肩刚性地抬 0.55~0.8 rad：前端会从肩毛里露出一个圆钝小头；
+      // rebound 取 0：翅只往上、不压回体表以内——翼下绒毛只比羽片矮一点点，往里压一丝就会从黑羽上冒出来
       const f = flick(this.wingT, 0.045, 0.07, 0);
       for (const side of ['left', 'right'] as const) {
-        pose.wing[side].lift += this.wingAmp * f;
-        pose.wing[side].twist += 0.12 * f;
-        pose.wing[side].sweep -= 0.18 * f;
+        pose.wing[side].open += this.wingOpen * f;
+        pose.wing[side].flap += 0.2 * f;
+        pose.wing[side].twist += 0.06 * f;
+        pose.wing[side].sweep -= 0.08 * f;
       }
       if (this.wingT > 0.3) this.wingT = Infinity;
     }
+  }
+}
+
+/** 展翅扑翼演示全程时长（秒）。 */
+export const SPREAD_DURATION = 1.95;
+
+/**
+ * 展翅扑翼演示：0.4 s 把双翅从收拢平滑展开（三段 Z 字折叠链打开、飞羽折扇张成短圆的百褶扇），
+ * 展满后轻扑两下（下扑略快、上扬略慢，随扑翼微微前扫、翼面随之翻转），停一拍，再 0.55 s 平滑收拢。
+ * 期间身体微微下蹲前俯、尾羽略展，像是枝上扑棱一下整理羽毛。
+ */
+export class SpreadLayer extends MotionLayer {
+  private t = Infinity;
+
+  cue(): void {
+    this.t = 0;
+  }
+
+  update(dt: number, ctx: MotionContext, pose: Pose): void {
+    if (this.t === Infinity) return;
+    this.t += dt;
+    const t = this.t;
+    if (t >= SPREAD_DURATION) {
+      this.t = Infinity;
+      return;
+    }
+    // 展翅度：0.4 s 展开，1.4 s 起收拢
+    const open = minJerk(t / 0.4) * (1 - minJerk((t - 1.4) / 0.55));
+    // 扑翼包络：0.4 s 起扑、1.3 s 停，两端柔和起落；两个扑翼周期
+    const env = minJerk((t - 0.4) / 0.12) * (1 - minJerk((t - 1.12) / 0.18));
+    const ph = (t - 0.4) * TAU * 2.25;
+    const flap = (0.22 + 0.42 * Math.sin(ph)) * env;
+    for (const side of ['left', 'right'] as const) {
+      pose.wing[side].open += open;
+      pose.wing[side].flap += flap;
+      pose.wing[side].sweep += 0.1 * env + 0.06 * Math.sin(ph + 0.6) * env;
+      pose.wing[side].twist += 0.1 * Math.sin(ph - 0.9) * env;
+    }
+    pose.body.pitch += 0.05 * open;
+    pose.tail.spread += 0.35 * open;
+    pose.tail.pitch += 0.1 * open;
+    void ctx;
   }
 }
 

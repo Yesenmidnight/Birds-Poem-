@@ -1,15 +1,28 @@
-import { BufferGeometry, Color, DoubleSide, Float32BufferAttribute, Vector3, type IUniform, type ShaderMaterial } from 'three';
+import { BufferAttribute, BufferGeometry, Color, DoubleSide, Float32BufferAttribute, Vector3, type IUniform, type ShaderMaterial } from 'three';
 import { makeLitMaterial, rgb, type LightingUniforms } from '../glsl/lit';
 import { clamp, lerp, makeRng } from '../util/math';
 import { bodyGradient, bodySDF, type BodyParams } from './bodySdf';
-import { FeatherBatch, featherMatrix, mirrorMatrix, type FeatherColorFn, type FeatherSpec } from './feathers';
+import {
+  FEATHER_KIND,
+  FeatherBatch,
+  featherMatrix,
+  frameRotation,
+  mirrorMatrix,
+  WING_SKIN_PARS,
+  type FeatherColorFn,
+  type FeatherRig,
+  type FeatherSpec,
+  type WingRigUniforms,
+} from './feathers';
 
 /**
- * 收拢的翅膀与长尾的排布。全部先按右半身摆放，再用 mirrorMatrix 镜像出左半身，
+ * 翅膀与长尾的排布。全部先按右半身摆放，再用 mirrorMatrix 镜像出左半身，
  * 这样羽色里的“前缘 / 后缘 / 外侧”在两侧都保持解剖学上正确的位置。
  *
- * 肩背的玫瑰粉棕不是正羽而是绒羽，由 plumage.ts 画在躯体绒毛层里；这里是收拢的翅
- * （覆羽、次级/三级飞羽、初级飞羽，暖炭黑底 + 后半段奶油白细羽缘）和长尾羽。
+ * 翅膀是可展开的：满展态按三段骨骼链（肩 → 肘 → 腕 → 腕掌）在翼平面里摆好，每片羽记一份
+ * “收拢 → 满展”的绕羽根旋转和平移，open = 0 完全是收拢态。
+ * 肩背的玫瑰粉棕不是正羽而是绒羽，由 plumage.ts 画在躯体绒毛层里；这里是翅
+ * （覆羽、次级/三级飞羽、初级飞羽）和长尾羽。
  */
 type V3 = [number, number, number];
 
@@ -23,21 +36,28 @@ const mix = (a: Color, b: Color, t: number): Color => a.clone().lerp(b, clamp(t,
 
 /**
  * 大覆羽：和中覆羽一样是纯深炭黑褐——北长尾山雀没有大山雀那种横穿翅膀的白色大覆羽翼斑，
- * 翅上的白只来自后半段三级/次级飞羽顺翅长向后收束的纵向羽缘。
+ * 翅上的白只来自次级/三级飞羽的外翈。
  * 羽尖只带一丝几乎看不见的暖灰褐，让叠瓦层次读得出来，不再是一排白麻将牌
  */
 const covert: FeatherColorFn = (_a, along) => mix(BLACK, BLACK_SOFT, smooth(0.5, 1.0, along) * 0.45);
-/** 中覆羽、初级覆羽：纯黑——侧面只读出大覆羽那一道翼斑。 */
+/** 中覆羽、初级覆羽：纯黑——翼根那块浓郁的深炭黑褐三角。 */
 const covertSmall: FeatherColorFn = () => BLACK;
-/** 次级飞羽：黑，下缘一条奶油白细羽缘。 */
+/**
+ * 次级飞羽（翼上）：物理自洽的双色羽翈——羽轴与内翈深炭黑，外翈宽阔干净的奶油白。
+ * 展开时黑白相间成百褶扇；收拢叠压时暗部藏在下层，只露出纵向白羽缘
+ */
 const flight: FeatherColorFn = (across, along) => {
-  const fringe = smooth(0.9, 0.98, across) * 0.8 + smooth(0.97, 1.0, along) * 0.2;
-  return mix(BLACK, WHITE, clamp(fringe, 0, 1) * 0.6);
+  const outer = smooth(0.08, 0.42, across) * (0.85 + 0.15 * smooth(0.0, 0.3, along));
+  return mix(BLACK, WHITE, outer * 0.92);
 };
-/** 初级飞羽：黑，下缘只有一丝很淡的浅线——9 片叠在一起收束成翅尖，白边太亮会成一把梳子。 */
+/**
+ * 初级飞羽（翼上）：烟灰炭褐，往羽尖略深，只带一丝极淡的浅缘——9 片叠在一起收束成翅尖；
+ * 羽轴在着色器里单独压深，翼下读得出一条条深色羽轴
+ */
 const primary: FeatherColorFn = (across, along) => {
+  const base = mix(rgb('#403a3d'), rgb('#2c2729'), 0.35 + 0.65 * along);
   const fringe = smooth(0.94, 1.0, across) * 0.7 + smooth(0.985, 1.0, along) * 0.3;
-  return mix(BLACK, WHITE, clamp(fringe, 0, 1) * 0.22);
+  return mix(base, WHITE, clamp(fringe, 0, 1) * 0.18);
 };
 /** 三级飞羽：黑，两缘各一条窄而清晰的奶油白羽缘——侧面那 2~3 道顺着翅长向后收束的细白线。 */
 const tertial: FeatherColorFn = (across, along) => {
@@ -52,10 +72,26 @@ const tailColor = (pair: number): FeatherColorFn => (across, along) => {
   return mix(BLACK, BLACK_SOFT, 0.15 + 0.5 * (pair / 4) + 0.15 * (across * 0.5 + 0.5));
 };
 
+/** 给 A / 中 / B 三点的二次插值（t = 0..1，t = 0.5 时正好过中点）。 */
+function quad(a: number, m: number, b: number, t: number): number {
+  const u = 1 - t;
+  return u * u * a + 2 * u * t * m + t * t * b;
+}
+
 function smooth(a: number, b: number, x: number): number {
   const t = clamp((x - a) / (b - a), 0, 1);
   return t * t * (3 - 2 * t);
 }
+
+/** 关节在翼平面里的位置 (u, v)：肩在枢轴原点，肘略靠后、腕略靠前，腕掌向前偏约 35°。 */
+const JOINT_E: [number, number] = [0.95, -0.14];
+const JOINT_W: [number, number] = [2.0, 0.14];
+const JOINT_M: [number, number] = [2.78, 0.66];
+
+/** 骨段上参数 t（0 = 近端，1 = 远端）处、向前偏 dv 的点：各排羽的满展羽根都挂在所属骨段上。 */
+const onHumerus = (t: number, dv: number): [number, number] => [lerp(0, JOINT_E[0], t), lerp(0, JOINT_E[1], t) + dv];
+const onForearm = (t: number, dv: number): [number, number] => [lerp(JOINT_E[0], JOINT_W[0], t), lerp(JOINT_E[1], JOINT_W[1], t) + dv];
+const onManus = (t: number, dv: number): [number, number] => [lerp(JOINT_W[0], JOINT_M[0], t), lerp(JOINT_W[1], JOINT_M[1], t) + dv];
 
 interface RowSpec {
   count: number;
@@ -94,6 +130,26 @@ interface RowSpec {
    */
   tuckAll?: number;
   tuckFront?: number;
+  /** 可展翅绑定：羽的类别（腹面配色、羽轴处理按它区分）。 */
+  kind: number;
+  /** 满展布局（见 SpreadRow）。 */
+  spread: SpreadRow;
+}
+
+/**
+ * 一排羽的满展布局：翼平面坐标（u 沿翼展向外、v 向前，cm），羽根行从 A 端到 B 端落在所属骨段上，
+ * 羽轴方向角从 +u 向后量（度），沿羽长的缩放给 A / 中 / B 三点，白翈宽度缩放、沿背侧法线的叠放高度。
+ */
+interface SpreadRow {
+  rootA: [number, number];
+  rootB: [number, number];
+  angA: number;
+  angB: number;
+  /** 羽轴再往上翘的分量（A → B）：靠近身体的内侧羽片要搭在鼓起的背 / 臀部绒毛上面，不能扎进身体里。 */
+  tilt: [number, number];
+  len: [number, number, number];
+  white: number;
+  lift: number;
 }
 
 /**
@@ -129,6 +185,10 @@ const WING_ROWS: RowSpec[] = [
     color: primary,
     stack: 0,
     tuckFront: 0.04,
+    // 满展：沿腕掌从腕到指尖依次排开，从朝后内（最内侧）扇到朝前外（最外侧），
+    // 中段最长、内外两端渐短 → 宽阔圆弧翼尖；总扇幅约 90°，羽尖处外侧几片略分开
+    kind: FEATHER_KIND.primary,
+    spread: { rootA: onManus(0.1, 0.05), rootB: onManus(1.0, 0), angA: 84, angB: -4, tilt: [0.08, 0], len: [0.78, 1.02, 0.9], white: 1, lift: 0 },
   },
   {
     // 次级飞羽：从翅根朝后下方顺向叠瓦，连成一整片深色翼面，下缘一条奶油白细羽缘
@@ -153,6 +213,10 @@ const WING_ROWS: RowSpec[] = [
     stack: 0.003,
     expose: 0.89,
     tuckFront: 0.04,
+    // 满展：沿前臂从腕端（A）到肘端（B）铺满内圈翼面，外侧的朝后外、内侧的朝后内（约 45° 扇幅）；
+    // 收拢时为了翼面只做了 0.8~1.0 cm，展开后放到真鸟比例（约 1.5 cm）；白翈收窄成折扇里的一道道白褶
+    kind: FEATHER_KIND.secondary,
+    spread: { rootA: onForearm(0.97, 0), rootB: onForearm(0.09, 0.08), angA: 76, angB: 122, tilt: [0.02, 0.3], len: [1.4, 1.6, 1.75], white: 0.55, lift: 0.04 },
   },
   {
     // 三级飞羽：3 片上下错开、侧缘相压，盖在次级飞羽的中后段上，两缘的奶油白羽缘连成 2~3 道细白线
@@ -176,6 +240,9 @@ const WING_ROWS: RowSpec[] = [
     color: tertial,
     stack: 0,
     tuckFront: 0.04,
+    // 满展：肘部的三级飞羽，朝后内盖住翅根和身体的接缝，压在次级飞羽内侧几片上面
+    kind: FEATHER_KIND.secondary,
+    spread: { rootA: onHumerus(1.0, 0.1), rootB: onHumerus(0.8, 0.05), angA: 112, angB: 126, tilt: [0.45, 0.6], len: [1.4, 1.45, 1.5], white: 0.6, lift: 0.12 },
   },
   {
     // 初级覆羽：盖住腕部初级飞羽的根部
@@ -200,6 +267,9 @@ const WING_ROWS: RowSpec[] = [
     stack: 0.002,
     expose: 0.75,
     tuckFront: 0.04,
+    // 满展：沿腕掌盖在初级飞羽根部上方，方向比初级飞羽略收拢
+    kind: FEATHER_KIND.covert,
+    spread: { rootA: onManus(0.12, 0.1), rootB: onManus(0.87, 0.08), angA: 46, angB: 4, tilt: [0.05, 0], len: [1.7, 1.8, 1.8], white: 1.6, lift: 0.03 },
   },
   {
     // 大覆羽：9 片宽而柔边的羽片顺翅长叠瓦，深炭黑褐，和白翼斑无关（见 covert）
@@ -227,6 +297,9 @@ const WING_ROWS: RowSpec[] = [
     // 上缘：整排羽根埋进肩背绒毛里，只有羽身露在外面
     tuckAll: 0.03,
     tuckFront: 0.03,
+    // 满展：沿前臂盖住次级飞羽的根部
+    kind: FEATHER_KIND.covert,
+    spread: { rootA: onForearm(0.95, 0.12), rootB: onForearm(0.07, 0.14), angA: 80, angB: 108, tilt: [0, 0.12], len: [1.5, 1.5, 1.5], white: 1.35, lift: 0.04 },
   },
   {
     // 中覆羽：最外层的黑色窄带，根部被肩背的玫瑰粉棕绒毛搭住
@@ -253,6 +326,8 @@ const WING_ROWS: RowSpec[] = [
     // 上缘 + 前缘：翅的上角整个埋进肩部绒毛窝里
     tuckAll: 0.04,
     tuckFront: 0.03,
+    kind: FEATHER_KIND.covert,
+    spread: { rootA: onForearm(0.9, 0.34), rootB: onHumerus(0.3, 0.4), angA: 72, angB: 104, tilt: [0, 0.12], len: [1.5, 1.5, 1.5], white: 2.0, lift: 0.05 },
   },
 ];
 
@@ -304,6 +379,64 @@ const UP = new Vector3(0, 1, 0);
  */
 export const WING_PIVOT = new Vector3(0.75, 2.72, -0.15);
 
+// ---------------------------------------------------------------------------------------------
+// 满展布局：三段式翅骨骼链 肩 S → 肘 E → 腕 W → 腕掌 M 在"翼平面"里摆开（右翅，翅枢轴坐标系）。
+// 翼平面由二面角 δ（略上抬）和后掠角 σ 决定：eU 沿翼展向外、eV 向前（弦向）、eN 朝背侧。
+// 收拢态是 Z 字折在体侧（肱骨朝后、前臂朝前、腕掌朝后），展开态各段落回翼平面：肱骨向外略后、
+// 前臂向外略前、腕掌向前偏约 35°——长尾山雀是短圆的百褶羽扇，腕掌前偏多、初级飞羽扇幅宽。
+// 每排羽的满展羽根落在所属骨段上（沿段的参数 + 弦向偏移 + 法向叠放高度），羽轴方向按折扇角给出，
+// 再换算成"收拢态羽片标架 → 展开态标架"的绕羽根旋转（见 feathers.ts 的 FeatherRig）。
+// 展开态是按真鸟展翅照片直接摆的静态姿态；open 在收拢 / 满展之间按羽片连续插值，中间过程
+// 就是百褶羽扇顺着骨骼链张开的样子。
+// ---------------------------------------------------------------------------------------------
+const DEG = Math.PI / 180;
+/** 翼平面：二面角 20°（展开时略上抬）、后掠 7°。 */
+const WING_DIHEDRAL = 20 * DEG;
+const WING_SWEEP = 7 * DEG;
+const cosD = Math.cos(WING_DIHEDRAL);
+const sinS = Math.sin(WING_SWEEP);
+const cosS = Math.cos(WING_SWEEP);
+/** 翼展方向（向外） */
+const SPAN_U = new Vector3(cosD * cosS, Math.sin(WING_DIHEDRAL), -cosD * sinS);
+/** 弦向（向前） */
+const CHORD_V = new Vector3(sinS, 0, cosS);
+/** 翼平面背侧法线 */
+const DORSAL_N = new Vector3().crossVectors(CHORD_V, SPAN_U);
+
+/** 翼平面里的点 (u 向外, v 向前, n 朝背侧) → 枢轴坐标。 */
+function wingPlane(u: number, v: number, n = 0): Vector3 {
+  return new Vector3().addScaledVector(SPAN_U, u).addScaledVector(CHORD_V, v).addScaledVector(DORSAL_N, n);
+}
+
+/** 翼平面里的方向：从 +u 向后（−v）转 ang（弧度）。 */
+function wingDir(ang: number): Vector3 {
+  return new Vector3().addScaledVector(SPAN_U, Math.cos(ang)).addScaledVector(CHORD_V, -Math.sin(ang));
+}
+
+/**
+ * 一只翅膀的展翅 uniform：羽片材质、翼内底壳材质、阴影深度材质共用这同一份。
+ * 变形全在顶点着色器里按绑定数据算，这里只负责 open 本身。
+ */
+export class WingRig {
+  readonly uniforms: WingRigUniforms = { uOpen: { value: 0 } };
+
+  constructor(readonly side: 1 | -1) {}
+
+  set(open: number): void {
+    this.uniforms.uOpen.value = clamp(open, 0, 1);
+  }
+}
+
+/** 翼内底壳肩段的展开旋转：和肱骨段一样，把贴在体侧、朝后的那片壳转到翼平面里朝外。 */
+const PANEL_ROT = frameRotation(
+  new Vector3(0, -0.15, -1).normalize(),
+  new Vector3(0.94, 0.33, 0.05),
+  wingDir(0),
+  DORSAL_N.clone(),
+);
+/** 满展时底壳整体往后挪一点、略微抬离翼平面：前缘和覆羽根对齐，不伸出翅的前缘。 */
+const PANEL_SHIFT = wingPlane(0, -0.08, 0.02);
+
 /** 一片羽在侧面 (y, z) 上的投影，翼面底板和翼下压毛都用它算羽片的覆盖范围。 */
 interface Placement {
   y0: number;
@@ -324,13 +457,16 @@ export interface FeatherSet {
   placements: Placement[];
 }
 
-/** 一片放好的羽毛：羽根、方向、法线、长度、规格，以及侧面投影。 */
+/** 一片放好的羽毛：羽根、方向、法线、长度、规格，以及侧面投影和展翅绑定数据。 */
 interface PlacedFeather {
   root: Vector3;
   dir: Vector3;
   nrm: Vector3;
   spec: FeatherSpec;
   placement: Placement;
+  kind: number;
+  /** 满展态（右翅枢轴坐标）：羽根、羽轴方向、羽长缩放、白翈宽度缩放 */
+  spread: { root: Vector3; dir: Vector3; lenScale: number; whiteScale: number };
 }
 
 /**
@@ -415,6 +551,14 @@ function placeWingFeathers(p: BodyParams, seed = 5): PlacedFeather[] {
           tipPos: row.tipPos,
           tipPow: row.tipPow,
         },
+        spread: {
+          root: wingPlane(lerp(row.spread.rootA[0], row.spread.rootB[0], f), lerp(row.spread.rootA[1], row.spread.rootB[1], f), row.spread.lift),
+          dir: wingDir(lerp(row.spread.angA, row.spread.angB, f) * DEG).addScaledVector(UP, lerp(row.spread.tilt[0], row.spread.tilt[1], f)).normalize(),
+          // 沿羽长缩放给三点，中间按二次插值
+          lenScale: quad(row.spread.len[0], row.spread.len[1], row.spread.len[2], f),
+          whiteScale: row.spread.white,
+        },
+        kind: row.kind,
       });
     }
   }
@@ -427,15 +571,31 @@ export function wingPlacements(p: BodyParams, seed = 5): Placement[] {
 }
 
 /**
- * 收拢的右翅：几何在鸟局部坐标里，所有顶点都已减去枢轴，便于绕枢轴旋转。
- * 每片羽顺着体表弯曲贴合（见 FeatherBatch.conformToBody），中后段不再悬空。
+ * 翅膀（默认收拢态）：几何在鸟局部坐标里，所有顶点都已减去枢轴，便于绕枢轴做整翅的抬落/扫转。
+ * 每片羽顺着体表弯曲贴合（见 FeatherBatch.conformToBody），并带上展翅绑定：收拢态羽根、
+ * 收拢 → 满展的绕羽根旋转和平移——顶点着色器按 uOpen 插值；open = 0 时逐顶点恒等，就是这里的收拢态。
  */
 export function buildWing(p: BodyParams, seed = 5, side: 1 | -1 = 1): FeatherSet {
   const batch = new FeatherBatch();
   const feathers = placeWingFeathers(p, seed);
   for (const f of feathers) {
     const m = featherMatrix(f.root, f.dir, f.nrm);
-    batch.add(f.spec, side === 1 ? m : mirrorMatrix(m));
+    // 收拢态羽片标架 → 满展态标架（羽轴沿折扇方向、羽面贴着翼平面朝上）
+    const rot = frameRotation(f.dir, f.nrm, f.spread.dir, DORSAL_N);
+    const root = new Vector3(f.root.x - WING_PIVOT.x, f.root.y - WING_PIVOT.y, f.root.z - WING_PIVOT.z);
+    const rig: FeatherRig = {
+      kind: f.kind,
+      // 几何减过枢轴、左翅按 x 镜像，绑定数据也要进同一个坐标系：镜像共轭一个旋转 = 轴镜像、角度取反
+      // （S·R(a, θ)·S = R(S·a, −θ)，右手系翻转了）
+      root: new Vector3(side * root.x, root.y, root.z),
+      axis: new Vector3(side * rot.axis.x, rot.axis.y, rot.axis.z),
+      angle: side * rot.angle,
+      trans: new Vector3(side * (f.spread.root.x - root.x), f.spread.root.y - root.y, f.spread.root.z - root.z),
+      lenScale: f.spread.lenScale,
+      whiteScale: f.spread.whiteScale,
+      weight: 1,
+    };
+    batch.add(f.spec, side === 1 ? m : mirrorMatrix(m), rig);
   }
   batch.conformToBody((y, z) => surfaceHalfWidth(p, y, z));
 
@@ -580,6 +740,9 @@ export function buildWingPanel(p: BodyParams, side: 1 | -1, placements: Placemen
   const nrm: number[] = [];
   const alp: number[] = [];
   const idx: number[] = [];
+  // 可展翅：肩段（枢轴后方 1.9 cm 以内）跟着肱骨走，更靠后的部分留在体表上、展翅时在材质里渐隐
+  const bones: number[] = [];
+  const chord: number[] = [];
   const vid = new Int32Array(nz * ny).fill(-1);
   const g = [0, 0, 0];
   for (let i = 0; i < nz; i++) {
@@ -594,6 +757,9 @@ export function buildWingPanel(p: BodyParams, side: 1 | -1, placements: Placemen
       const gl = Math.hypot(g[0], g[1], g[2]) || 1;
       nrm.push((side * g[0]) / gl, g[1] / gl, g[2] / gl);
       alp.push(alpha(dist[i * ny + j]));
+      bones.push(0.9 * smooth(-1.9, -0.9, z - WING_PIVOT.z));
+      // 底壳的"羽轴"取竖直方向：满展时沿这个方向把弦长压到 0.55，前缘才不会伸出翅的前缘
+      chord.push(0, -1, 0);
     }
   }
   for (let i = 0; i < nz - 1; i++) {
@@ -613,40 +779,87 @@ export function buildWingPanel(p: BodyParams, side: 1 | -1, placements: Placemen
   geometry.setAttribute('position', new Float32BufferAttribute(pos, 3));
   geometry.setAttribute('normal', new Float32BufferAttribute(nrm, 3));
   geometry.setAttribute('aDist', new Float32BufferAttribute(alp, 1));
+  geometry.setAttribute('aAxis', new Float32BufferAttribute(chord, 3));
+  // 绕枢轴（肩）转肱骨段的那个旋转，羽根在原点；弦长（沿竖直方向）满展时压到 0.45，整体后移一点
+  const nv = pos.length / 3;
+  const rigA = new Float32Array(nv * 4);
+  const rigB = new Float32Array(nv * 4);
+  const rigC = new Float32Array(nv * 4);
+  const misc = new Float32Array(nv * 4);
+  for (let i = 0; i < nv; i++) {
+    rigA[i * 4 + 3] = bones[i];
+    rigB.set([side * PANEL_SHIFT.x, PANEL_SHIFT.y, PANEL_SHIFT.z, 0.45], i * 4);
+    rigC.set([side * PANEL_ROT.axis.x, PANEL_ROT.axis.y, PANEL_ROT.axis.z, side * PANEL_ROT.angle], i * 4);
+    // 未贴体的 x 就用自己的 x（底壳不释放压弯）
+    misc[i * 4] = pos[i * 3] - side * WING_PIVOT.x;
+    misc[i * 4 + 1] = 1;
+  }
+  geometry.setAttribute('aRigA', new BufferAttribute(rigA, 4));
+  geometry.setAttribute('aRigB', new BufferAttribute(rigB, 4));
+  geometry.setAttribute('aRigC', new BufferAttribute(rigC, 4));
+  geometry.setAttribute('aMisc', new BufferAttribute(misc, 4));
   geometry.setIndex(idx);
   geometry.translate(-side * WING_PIVOT.x, -WING_PIVOT.y, -WING_PIVOT.z);
   geometry.computeBoundingSphere();
   return geometry;
 }
 
-/** 翼面底板的材质：和正羽一样的哑光深色，不抢羽片的层次；aDist 是已经算好的边缘渐隐系数。 */
-export function makeWingPanelMaterial(lighting: LightingUniforms): ShaderMaterial {
-  const uniforms: Record<string, IUniform> = { uPanelCol: { value: BLACK.clone().multiplyScalar(0.92) } };
+/**
+ * 翼面底板的材质：收拢时翼上是和正羽一样的哑光深色（不抢羽片的层次）；展翅后翼下露出纯白的翅下覆羽 /
+ * 前翼膜底色，和胸腹绒毛连成一片。aDist 是已经算好的边缘渐隐系数，枢轴后方 1.5~2.2 cm 以外的部分随展翅度渐隐。
+ */
+export function makeWingPanelMaterial(lighting: LightingUniforms, rig: WingRigUniforms): ShaderMaterial {
+  const uniforms: Record<string, IUniform> = {
+    uPanelCol: { value: BLACK.clone().multiplyScalar(0.92) },
+    uPanelVent: { value: rgb('#ebe6de') },
+  };
   return makeLitMaterial({
     lighting,
     side: DoubleSide,
     alphaToCoverage: true,
-    uniforms,
+    uniforms: { ...uniforms, uOpen: rig.uOpen },
     vertexPars: /* glsl */ `
+${WING_SKIN_PARS}
 attribute float aDist;
+attribute vec3 aAxis;
 varying float vFade;
+varying vec3 vPanelP;
 `,
     vertexMain: /* glsl */ `
-	vFade = aDist;
+	vPanelP = pos;
+	vFade = aDist * ( 1.0 - uOpen * smoothstep( 1.5, 2.2, -pos.z ) );
+	vec3 axis = aAxis;
+	pos = wingSkinPoint( pos, nrm, axis );
+	nrm = wingSkinDir( nrm );
 `,
     fragmentPars: /* glsl */ `
 uniform vec3 uPanelCol;
+uniform vec3 uPanelVent;
+uniform float uOpen;
 varying float vFade;
+varying vec3 vPanelP;
 `,
     surface: /* glsl */ `
 	Surf s;
-	s.albedo = uPanelCol;
+	// 翼下覆羽：顺着翅长的细绒纹，和胸腹白绒同色
+	float grain = snoise( vec3( vPanelP.y * 9.0, vPanelP.z * 40.0, 11.0 ) ) * 0.5 + 0.5;
+	if ( gl_FrontFacing ) {
+		// 翼上：和覆羽一样的深炭黑褐，带顺着翅长的人字形羽小枝细纹（细节小于像素时淡出），不是一块光板
+		float phase = ( -vPanelP.z - 1.15 * abs( vPanelP.y ) ) * 62.0;
+		float atten = 1.0 - smoothstep( 0.1, 0.35, fwidth( phase ) );
+		s.albedo = uPanelCol * ( 0.9 + 0.16 * ( 0.5 + 0.5 * sin( phase * 6.2831853 ) ) * atten );
+	} else {
+		// 翼下覆羽：顺着翅长的细绒纹，和胸腹白绒同色
+		s.albedo = uPanelVent * ( 0.95 + 0.07 * grain );
+	}
 	s.ao = 1.0;
 	s.wrap = 0.4;
 	s.specTint = vec3( 1.0 );
 	s.gloss = 0.4;
 	s.specAmt = 0.04;
-	s.alpha = vFade;
+	// 展开后翼上那面的前缘渐隐成毛边（收拢态不变）：覆羽根接住它，不是一块硬边的黑板
+	float lead = -0.45 * vPanelP.y - 0.08;
+	s.alpha = vFade * ( gl_FrontFacing ? 1.0 - uOpen * smoothstep( 0.18, 0.46, lead ) : 1.0 );
 	return s;
 `,
   });

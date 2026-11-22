@@ -1,7 +1,7 @@
 import { Quaternion, Vector3 } from 'three';
 import { makeRng } from '../../util/math';
 import { DEG } from './curves';
-import { BlinkLayer, BreathLayer, FidgetLayer, GazeLayer, SwayLayer, type MotionContext, type MotionEvents, type MotionLayer } from './layers';
+import { BlinkLayer, BreathLayer, FidgetLayer, GazeLayer, SpreadLayer, SwayLayer, type MotionContext, type MotionEvents, type MotionLayer } from './layers';
 import { resetPose, restPose, type Pose } from './Pose';
 
 /** 每帧由 App 提供的外部环境。 */
@@ -13,7 +13,7 @@ export interface MotionFrame {
   gazeWorld: Vector3 | null;
 }
 
-export type MotionCue = 'saccade' | 'tilt' | 'blink' | 'nict' | 'tailFlick' | 'wingFlick';
+export type MotionCue = 'saccade' | 'tilt' | 'blink' | 'nict' | 'tailFlick' | 'wingFlick' | 'spread';
 
 /**
  * 微生命动作系统：呼吸、跳视/歪头、眨眼/瞬膜、甩尾/弹翅、扭身各自是一个独立的层，
@@ -34,6 +34,7 @@ export class MotionController {
   readonly gaze = new GazeLayer();
   readonly blink = new BlinkLayer();
   readonly fidget = new FidgetLayer();
+  readonly spread = new SpreadLayer();
   readonly sway = new SwayLayer();
 
   private readonly layers: MotionLayer[];
@@ -50,7 +51,7 @@ export class MotionController {
 
   constructor() {
     // 扭身层放在最后：它读这一帧已经叠加好的头部转角和甩尾/弹翅事件
-    this.layers = [this.breath, this.gaze, this.blink, this.fidget, this.sway];
+    this.layers = [this.breath, this.gaze, this.blink, this.fidget, this.spread, this.sway];
   }
 
   /** 每帧调用：推进时间并重新叠加出这一帧的 Pose。 */
@@ -94,6 +95,9 @@ export class MotionController {
         break;
       case 'wingFlick':
         this.fidget.cueWing(this.ctx, this.events);
+        break;
+      case 'spread':
+        this.spread.cue();
         break;
     }
   }

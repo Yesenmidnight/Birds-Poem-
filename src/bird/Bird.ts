@@ -5,6 +5,7 @@ import {
   Mesh,
   Quaternion,
   Vector3,
+  Vector2,
   Euler,
   type IUniform,
   type Object3D,
@@ -13,8 +14,8 @@ import type { LightingUniforms } from '../glsl/lit';
 import { LONG_TAILED_TIT, type BodyParams } from './bodySdf';
 import { buildBody } from './body';
 import { Fur } from './fur';
-import { makeFeatherMaterial } from './feathers';
-import { WING_PIVOT, buildTail, buildWing, buildWingPanel, makeWingPanelMaterial } from './wingTail';
+import { makeFeatherMaterial, makeWingDepthMaterial, type WingRigUniforms } from './feathers';
+import { WING_PIVOT, WingRig, buildTail, buildWing, buildWingPanel, makeWingPanelMaterial } from './wingTail';
 import {
   LID_GAP_LOWER,
   LID_GAP_UPPER,
@@ -53,9 +54,13 @@ export interface BlinkPose {
   squint?: number;
 }
 
-/** 翅膀姿态（弧度）：lift 绕前后轴抬落，sweep 绕竖轴前后扫，twist 沿翅展方向翻转。 */
+/**
+ * 翅膀姿态：open 是展翅度 0..1（0 = 收拢贴体，三段骨骼链 Z 字折叠；1 = 完全展开、飞羽折扇张开），
+ * 其余是绕肩枢轴的刚体角（弧度）：flap 払翼（前后轴抬落）、sweep 绕竖轴前后扫、twist 沿翅展方向翻转。
+ */
 export interface WingPose {
-  lift?: number;
+  open?: number;
+  flap?: number;
   sweep?: number;
   twist?: number;
 }
@@ -97,6 +102,8 @@ export class Bird {
   private readonly jawLower = new Group();
   private readonly eyes: EyeRig[] = [];
   private readonly wingPivots: Record<'left' | 'right', Group> = { left: new Group(), right: new Group() };
+  /** 可展翅：羽片 / 底壳 / 阴影深度材质共用每只翅各自的一份 open uniform。 */
+  private readonly wingRigs: Record<'left' | 'right', WingRig> = { left: new WingRig(-1), right: new WingRig(1) };
   private readonly tailPivot = new Group();
   private readonly tailSpread: IUniform<number>;
   /** 颈骨枢轴 ≈ 颈部椭球中心；头骨枢轴 = 头部椭球中心（头球的曲率中心），构造时从 params 派生。 */
@@ -104,6 +111,7 @@ export class Bird {
   private readonly headPivot: Vector3;
   private readonly mNeck = new Matrix4();
   private readonly mHead = new Matrix4();
+  private readonly wingOpen = new Vector2();
   private readonly shift = new Matrix4();
   private readonly rot = new Matrix4();
   private readonly quat = new Quaternion();
@@ -122,20 +130,23 @@ export class Bird {
     this.breathSpace.matrixAutoUpdate = false;
 
     // ---------- 双翅与尾：各自一个枢轴 ----------
-    const wingMat = makeFeatherMaterial(lighting);
-    const tailMat = makeFeatherMaterial(lighting);
-    const panelMat = makeWingPanelMaterial(lighting);
+    // 尾羽不绑翅骨骼：给它一份 open 恒为 0 的 rig，和翅羽共用一套顶点着色器（open = 0 时逐顶点恒等）
+    const tailRig: WingRigUniforms = { uOpen: { value: 0 } };
+    const tailMat = makeFeatherMaterial(lighting, tailRig);
     this.tailSpread = tailMat.uniforms.uSpread!;
     let featherCount = 0;
     for (const side of ['right', 'left'] as const) {
       const s = side === 'right' ? 1 : -1;
+      const rig = this.wingRigs[side];
       const wing = buildWing(params, 5, s);
       featherCount += wing.count;
-      const mesh = new Mesh(wing.geometry, wingMat);
+      const mesh = new Mesh(wing.geometry, makeFeatherMaterial(lighting, rig.uniforms));
       mesh.castShadow = true;
       mesh.receiveShadow = true;
-      // 翼内遮光底壳：藏在正羽轮廓以内，羽片根部之间的缝不透体表
-      const panel = new Mesh(buildWingPanel(params, s, wing.placements), panelMat);
+      // 阴影用的深度材质走同一套顶点变形，展开的翅投出去的影子才是展开的
+      mesh.customDepthMaterial = makeWingDepthMaterial(rig.uniforms);
+      // 翼内遮光底壳：藏在正羽轮廓以内，羽片根部之间的缝不透体表；展翅后肩段跟着肱骨走、翼下露出纯白
+      const panel = new Mesh(buildWingPanel(params, s, wing.placements), makeWingPanelMaterial(lighting, rig.uniforms));
       panel.receiveShadow = true;
       const pivot = this.wingPivots[side];
       pivot.position.set(s * WING_PIVOT.x, WING_PIVOT.y, WING_PIVOT.z);
@@ -284,6 +295,8 @@ export class Bird {
     this.setJawOpen(pose.jaw);
     this.setWingPose('left', pose.wing.left);
     this.setWingPose('right', pose.wing.right);
+    // 翅一展，被翅压住的腋下 / 两胁绒毛回弹成全长（右翅 = x 分量，左翅 = y 分量）
+    this.wingOpen.set(pose.wing.right.open, pose.wing.left.open);
     this.setTailPose(pose.tail);
     this.setBreath(pose.breath);
     this.setBodyPose(pose.body);
@@ -326,13 +339,17 @@ export class Bird {
     this.jawUpper.rotation.x = -0.25 * a;
   }
 
-  /** 翅膀姿态：side 为 'left' / 'right' / 'both'。收拢的翅是刚体，抬落、前后扫、翻转用于弹翅。 */
+  /**
+   * 翅膀姿态：side 为 'left' / 'right' / 'both'。open 驱动展开变形（在着色器里按羽片插值），
+   * 扑翼 / 前后扫 / 翻转是整个翅绕肩枢轴的刚体转动。
+   */
   setWingPose(side: 'left' | 'right' | 'both', pose: WingPose): void {
     const sides = side === 'both' ? (['left', 'right'] as const) : ([side] as const);
     for (const s of sides) {
       const sign = s === 'right' ? 1 : -1;
       const g = this.wingPivots[s];
-      g.rotation.set(pose.twist ?? 0, sign * (pose.sweep ?? 0), sign * (pose.lift ?? 0));
+      g.rotation.set(pose.twist ?? 0, sign * (pose.sweep ?? 0), sign * (pose.flap ?? 0));
+      this.wingRigs[s].set(pose.open ?? 0);
     }
   }
 
