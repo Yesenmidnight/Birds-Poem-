@@ -371,6 +371,8 @@ export class Bird {
     this.mouthJaw.set(a, -0.25 * a);
     this.jawPush.value = push;
     this.jawAngle.value = a;
+    // 下巴扫过区间的绒毛跟着张嘴度临时压短（fur.ts 的 aJaw / uJawOpen）
+    this.fur.uniforms.uJawOpen.value = a;
     this.tongueLift.value = smoothstep(0.08, 0.2, a);
   }
 

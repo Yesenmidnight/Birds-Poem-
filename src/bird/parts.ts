@@ -103,18 +103,18 @@ export function buildMandible(p: BodyParams, upper: boolean): BufferGeometry {
       idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
     }
   }
-  // 小舌（只有下颌）：贴在嘴缝面上的一枚扁勺，铰链前方 0.045 起长 0.125，最宽 0.034、最高 0.021
+  // 小舌（只有下颌）：下颌内槽前部一枚小巧圆润的舌尖，铰链前方 0.07 起长 0.08，最宽 0.026、最高 0.015
   if (!upper) {
-    const NU = 10;
+    const NU = 8;
     const NV = 8;
     const tBase = pos.length / 3;
     for (let i = 0; i <= NU; i++) {
       const u = i / NU;
-      const d = 0.045 + u * 0.125;
+      const d = 0.07 + u * 0.08;
       const { c } = section(d / L);
       const bell = Math.sin(Math.PI * u);
-      const hw = 0.034 * Math.pow(bell, 0.7) + 0.0015;
-      const hMax = 0.021 * Math.pow(bell, 0.8);
+      const hw = 0.026 * Math.sqrt(bell) + 0.0012;
+      const hMax = 0.015 * Math.pow(bell, 0.6);
       for (let j = 0; j <= NV; j++) {
         const v = (j / NV) * 2 - 1;
         const h = hMax * Math.pow(1 - v * v, 0.6);
@@ -203,15 +203,20 @@ varying float vTongue;
 	float mouth = step( 0.5, vSeam );
 	float tongue = step( 1.5, vSeam );
 	float t = clamp( along / uBeakLen, 0.0, 1.0 );
-	vec3 mouthCol = mix( vec3( 0.16, 0.045, 0.04 ), vec3( 0.45, 0.14, 0.105 ), smoothstep( 0.0, 0.45, t ) );
-	mouthCol = mix( mouthCol, vec3( 0.62, 0.22, 0.17 ), tongue * 0.85 );
+	// 越往嘴根深处越暗（喉部环境光遮蔽），不是平涂亮粉
+	vec3 mouthCol = mix( vec3( 0.10, 0.03, 0.025 ), vec3( 0.45, 0.14, 0.105 ), smoothstep( 0.0, 0.55, t ) );
+	// 下颌内槽不是一整片粉：角质喙的内面是暗的，只有嘴根那一截黏膜透出暖珊瑚粉、往前 0.45 喙长内沉进暗角质——
+	// 槽里只靠小舌露一枚粉舌尖（上一版整条下颌内槽都是亮粉，斜前看像张着一嘴粉纸）
+	vec3 trough = mix( vec3( 0.34, 0.12, 0.095 ), vec3( 0.075, 0.045, 0.04 ), smoothstep( 0.08, 0.45, t ) );
+	mouthCol = mix( mouthCol, trough, step( uBeakSide, 0.0 ) );
+	mouthCol = mix( mouthCol, vec3( 0.66, 0.24, 0.18 ), tongue * 0.85 );
 	// 嘴缝边（tomium）是黑的：口腔色从缝边往里 0.015 才亮起来；合拢时整条缝是深色缝，张开后才是粉口腔
 	float rim = smoothstep( 0.0, 0.015, beakW( uBeakLen - along ) * ${(1 - BEAK_NOTCH).toFixed(4)} - abs( vObj.x ) );
 	mouthCol = mix( vec3( 0.02, 0.015, 0.015 ), mouthCol, rim * smoothstep( 0.02, 0.1, uJawOpen ) );
 	Surf s;
 	s.albedo = mix( uBeakCol * ( 0.8 + 0.4 * grain ), uBaseCol * ( 0.92 + 0.12 * grain ), base );
 	s.albedo = mix( s.albedo, mouthCol, mouth );
-	s.ao = mix( 1.0, 0.55 + 0.45 * t, mouth );
+	s.ao = mix( 1.0, 0.4 + 0.6 * t, mouth );
 	s.wrap = mix( mix( 0.3, 0.55, base ), 0.7, mouth );
 	s.specTint = vec3( 1.0 );
 	s.gloss = mix( mix( 0.62, 0.3, base ), 0.5, mouth );
@@ -231,12 +236,14 @@ varying float vTongue;
 }
 
 /**
- * 口腔两侧壁（口角）：连接上下颌嘴缝边的条带。合拢时上下缘重合是零面积；
- * 张开时顶点着色器把下缘跟下颌转（含下颌前推 uPush）、上缘跟上颌转、中间线性插值。
- * 只做口角那一段（铰链到 80% 喙长）：喙尖那一段上下颌的嘴缝边之间是张开的口，不是一面粉墙；也不需要靠剃秃体表网格来充当口腔。几何在铰链坐标系里（原点 = 铰链）。
+ * 口角膜（嘴角的 flesh）：连接上下颌嘴缝边的一小片，只占嘴角根部最深处 25% 的喙长，中段往口腔中线收进去
+ * 微微凹陷（像真鸟嘴角往咽喉里陷的漏斗）；合拢时上下缘重合是零面积，张开时顶点着色器把下缘跟下颌转
+ * （含下颌前推 uPush）、上缘跟上颌转、中间按 aBlend 插值。再往前 75% 的上下喙之间是透空的 V 字口，
+ * 不是一面粉墙。几何在铰链坐标系里（原点 = 铰链）。
  */
 export function buildMouthCorners(p: BodyParams): BufferGeometry {
-  const N = 10;
+  const N = 8;
+  const M = 4;
   const dir = new Vector3(...p.beakDir).normalize();
   const up = new Vector3().crossVectors(dir, X_AXIS).normalize();
   const L = p.beakLength;
@@ -244,27 +251,32 @@ export function buildMouthCorners(p: BodyParams): BufferGeometry {
   const blend: number[] = [];
   const side: number[] = [];
   const along: number[] = [];
+  const fold: number[] = [];
   const idx: number[] = [];
   for (const sd of [1, -1]) {
     const b0 = pos.length / 3;
     for (let i = 0; i <= N; i++) {
-      // 口角 flesh 从铰链伸到 80% 喙长：再往前只剩喙尖那一点缝，从侧面看进去是口腔内部而不是透空
-      const s = (i / N) * 0.8;
+      const s = (i / N) * 0.25;
       const tRoot = BEAK_REF_LEN - (1 - s) * L;
       const w = beakHalfWidth((1 - s) * L) * (1 - BEAK_NOTCH);
       const droop = (-BEAK_DROOP * tRoot * tRoot) / BEAK_REF_LEN;
       const y = dir.y * s * L + up.y * droop;
       const z = dir.z * s * L + up.z * droop;
-      for (const bl of [0, 1]) {
-        pos.push(sd * w, y, z);
+      for (let j = 0; j <= M; j++) {
+        const bl = j / M;
+        const dent = Math.sin(Math.PI * bl);
+        pos.push(sd * w * (1 - 0.45 * dent), y, z);
         blend.push(bl);
         side.push(sd);
         along.push(s);
+        fold.push(dent);
       }
     }
     for (let i = 0; i < N; i++) {
-      const a = b0 + i * 2;
-      idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+      for (let j = 0; j < M; j++) {
+        const a = b0 + i * (M + 1) + j;
+        idx.push(a, a + M + 1, a + 1, a + 1, a + M + 1, a + M + 2);
+      }
     }
   }
   const g = new BufferGeometry();
@@ -272,6 +284,7 @@ export function buildMouthCorners(p: BodyParams): BufferGeometry {
   g.setAttribute('aBlend', new Float32BufferAttribute(blend, 1));
   g.setAttribute('aSide', new Float32BufferAttribute(side, 1));
   g.setAttribute('aT', new Float32BufferAttribute(along, 1));
+  g.setAttribute('aFold', new Float32BufferAttribute(fold, 1));
   g.setIndex(idx);
   g.computeVertexNormals();
   return g;
@@ -288,10 +301,12 @@ export function makeMouthMaterial(lighting: LightingUniforms, p: BodyParams): Sh
 attribute float aBlend;
 attribute float aSide;
 attribute float aT;
+attribute float aFold;
 uniform vec2 uJaw;
 uniform float uPush;
 uniform vec3 uBeakDir;
 varying float vT;
+varying float vFold;
 `,
     vertexMain: /* glsl */ `
 	float cl = cos( uJaw.x ), sl = sin( uJaw.x ), cu = cos( uJaw.y ), su = sin( uJaw.y );
@@ -300,14 +315,20 @@ varying float vT;
 	pos = mix( pl, pu, aBlend );
 	nrm = vec3( aSide, 0.0, 0.0 );
 	vT = aT;
+	vFold = aFold;
 `,
     fragmentPars: /* glsl */ `
 varying float vT;
+varying float vFold;
 `,
     surface: /* glsl */ `
 	Surf s;
-	s.albedo = mix( vec3( 0.16, 0.045, 0.04 ), vec3( 0.42, 0.13, 0.10 ), smoothstep( 0.0, 0.5, vT ) );
-	s.ao = 0.7;
+	// 越靠嘴根越暗、凹陷里更暗：喉部环境光遮蔽，不是平涂亮粉
+	float depth = smoothstep( 0.0, 0.6, vT );
+	vec3 c = mix( vec3( 0.09, 0.025, 0.02 ), vec3( 0.42, 0.13, 0.10 ), depth );
+	c = mix( c, c * 0.45, vFold * 0.6 );
+	s.albedo = c;
+	s.ao = 0.3 + 0.55 * depth * ( 1.0 - 0.6 * vFold );
 	s.wrap = 0.7;
 	s.specTint = vec3( 1.0 );
 	s.gloss = 0.5;

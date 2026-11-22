@@ -70,6 +70,9 @@ attribute vec3 aParam;
 attribute float aPress;
 // 左右翅的展翅度（x = 右翅，y = 左翅）
 uniform vec2 uWingOpen;
+// 嘴根周围一圈毛（aJaw = 1）：张嘴后这段毛临时压短，两瓣颌不会埋在毛里；合拢态全长（body.ts 不静态压它）
+attribute float aJaw;
+uniform float uJawOpen;
 attribute float aLayer;
 uniform mat4 uBones[2];
 uniform float uShellCount;
@@ -118,6 +121,8 @@ const FUR_VERTEX_MAIN = /* glsl */ `
 	// 翅展开 0.25~0.7 之间，翼下压短的绒毛平滑回弹到全长；收拢态（uWingOpen = 0）和原来完全一样
 	float wingOpen = position.x >= 0.0 ? uWingOpen.x : uWingOpen.y;
 	float furK = mix( aParam.x, aPress, smoothstep( 0.25, 0.7, wingOpen ) );
+	// 张嘴 0.04~0.2 rad 之间，嘴根周围一圈的毛压到 0.3；合拢态（uJawOpen = 0）逐位不变
+	furK = mix( furK, min( furK, 0.3 ), aJaw * smoothstep( 0.04, 0.2, uJawOpen ) );
 	float len = uFurLen * furK * ( 0.72 + 0.56 * clumpAmt ) * mix( 0.78, 1.32, uFluff );
 	// 毛长的细碎起伏同样是空间连续的低频噪声
 	len *= 0.82 + 0.36 * ( snoise( position * 5.0 + 3.1 ) * 0.5 + 0.5 );
@@ -290,6 +295,7 @@ export class Fur {
       uTranslucency: { value: settings.translucency },
       uBones: { value: [new Matrix4(), new Matrix4()] },
       uWingOpen: { value: new Vector2(0, 0) },
+      uJawOpen: { value: 0 },
       uStroke: { value: Array.from({ length: MAX_STROKES }, () => new Vector4(0, 0, 0, 0.3)) },
       uStrokeDir: { value: Array.from({ length: MAX_STROKES }, () => new Vector3(0, 0, -1)) },
       uStrokeAge: { value: new Array<number>(MAX_STROKES).fill(0) },
