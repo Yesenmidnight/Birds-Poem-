@@ -99,8 +99,9 @@ export class Bird {
   private readonly wingPivots: Record<'left' | 'right', Group> = { left: new Group(), right: new Group() };
   private readonly tailPivot = new Group();
   private readonly tailSpread: IUniform<number>;
-  private readonly neckPivot = new Vector3(0, 2.8, 0.4);
-  private readonly headPivot = new Vector3(0, 3.15, 0.55);
+  /** 颈骨枢轴 ≈ 颈部椭球中心；头骨枢轴 = 头部椭球中心（头球的曲率中心），构造时从 params 派生。 */
+  private readonly neckPivot: Vector3;
+  private readonly headPivot: Vector3;
   private readonly mNeck = new Matrix4();
   private readonly mHead = new Matrix4();
   private readonly shift = new Matrix4();
@@ -110,6 +111,9 @@ export class Bird {
 
   constructor(lighting: LightingUniforms, perch: Perch, params: BodyParams = LONG_TAILED_TIT) {
     this.params = params;
+    // 头骨绕头球曲率中心转：大角度转头/歪头时头是原地沿共心球面切向滑动，不会像钟摆一样把头甩出圆团子轮廓
+    this.headPivot = new Vector3(params.head.c[0], params.head.c[1], params.head.c[2]);
+    this.neckPivot = new Vector3(params.neck.c[0], params.neck.c[1] - 0.03, params.neck.c[2] - 0.02);
     const t0 = performance.now();
 
     const body = buildBody(params);
@@ -285,9 +289,10 @@ export class Bird {
     this.setBodyPose(pose.body);
   }
 
-  /** 眼睛高度处的头部世界坐标，动作系统换算注视角用。 */
+  /** 头部中心的世界坐标，动作系统换算注视角用（跟随 params.head）。 */
   headWorldPosition(out: Vector3): Vector3 {
-    return this.headParts.localToWorld(out.set(0, 3.45, 0.8));
+    const c = this.params.head.c;
+    return this.headParts.localToWorld(out.set(c[0], c[1], c[2]));
   }
 
   /** 躯干当前朝向（世界）：头颈姿态是相对躯干定义的，注视角要按这个坐标系反算。 */

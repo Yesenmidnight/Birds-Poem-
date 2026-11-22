@@ -154,8 +154,9 @@ export class FeatherBatch {
 
   /**
    * 让每片羽顺着体表弯曲贴合（收拢翅用）：沿羽长按参数 u 取横截面，把整段横截面沿 x 平移到
-   * “体表半宽 + 设计偏移”上——设计偏移由羽根、羽尖各自离体表的高度沿羽长线性过渡给出，
-   * 所以羽片自身的杯度、弓度、叠压关系全都保留，只是不再是一根悬空的直尺弦线。
+   * “体表半宽 + 离面偏移”上——离面偏移沿羽长保持羽根的设计值，所以羽片自身的杯度、弓度、叠压关系
+   * 全都保留，只是不再是一根悬空的直尺弦线；身体往后收窄时翅尖会跟着体表往中线收拢（V 字抱拢），
+   * 而不是停在羽根那条 x 上悬空撇在肚子外侧。
    * 体表按每个顶点自己的 (y, z) 取，而不是按羽轴中心线取：叠在一起的两片羽在同一点拿到的是同一个
    * 体表值，彼此只差设计偏移（0.003~0.005 cm），叠压顺序才不会被体表曲率的微小差别打乱。
    * surface 为 (y, z) 处的体表半宽；左右翅都按 |x| 处理。
@@ -164,11 +165,7 @@ export class FeatherBatch {
     for (const f of this.frames) {
       const verts = (ROWS + 1) * 9;
       const sign = f.root.x >= 0 ? 1 : -1;
-      const tipY = f.root.y + f.dir.y * f.len;
-      const tipZ = f.root.z + f.dir.z * f.len;
-      const tipX = Math.abs(f.root.x + f.dir.x * f.len);
       const offRoot = Math.abs(f.root.x) - surface(f.root.y, f.root.z);
-      const offTip = tipX - surface(tipY, tipZ);
       for (let v = f.base; v < f.base + verts; v++) {
         const px = this.pos[v * 3];
         const py = this.pos[v * 3 + 1];
@@ -180,7 +177,7 @@ export class FeatherBatch {
         // 顶点相对这一行弦线中心的横向偏差（杯度、弓度、羽面横向），原样保留
         const cx = Math.abs(f.root.x + f.dir.x * f.len * u);
         const local = sign * px - cx;
-        this.pos[v * 3] = sign * (surface(py, pz) + offRoot + (offTip - offRoot) * u + local);
+        this.pos[v * 3] = sign * (surface(py, pz) + offRoot + local);
       }
     }
     this.conformed = true;

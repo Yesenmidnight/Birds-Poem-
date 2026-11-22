@@ -39,12 +39,14 @@ export const VIEWS: Record<string, ViewPreset> = {
   side: { az: 0.0, el: 0.05, dist: 11.5, target: [0.6, 2.4, 0] },
   front: { az: -Math.PI / 2 + 0.18, el: 0.08, dist: 10, target: [-0.3, 2.6, 0] },
   back: { az: Math.PI / 2 - 0.2, el: 0.2, dist: 12, target: [0.5, 2.5, 0] },
-  head: { az: -0.75, el: 0.1, dist: 4.6, target: [-0.55, 3.75, 0.05] },
+  head: { az: -0.75, el: 0.1, dist: 4.6, target: [-0.6, 3.55, 0.05] },
   tail: { az: -0.35, el: 0.3, dist: 13, target: [3.5, 1.6, 0] },
   wide: { az: -0.5, el: 0.2, dist: 28, target: [2, 2, 0] },
   // 俯视自检：正上方偏后看，头在上、尾在下；斜前上方看翅与肩胸的衔接
   top: { az: Math.PI / 2 + 0.12, el: 1.18, dist: 10, target: [0.5, 2.4, 0] },
   topfront: { az: -Math.PI / 2 + 0.55, el: 0.8, dist: 10.5, target: [0.2, 2.5, 0] },
+  // 正后方平视：对照真鸟正背面参考图看 T 字黑鞍和双翅 V 字抱拢
+  rear: { az: Math.PI / 2 + 0.04, el: 0.08, dist: 10, target: [0.4, 2.5, 0] },
 };
 const VIEW_NAMES = Object.keys(VIEWS);
 
@@ -230,7 +232,7 @@ export class App {
     ];
 
     const vw = p.section('视角');
-    p.segmented(vw, ['四分之三', '侧面', '正面', '背面', '头部', '尾部', '远景', '俯视', '斜俯视'], 0, (i) =>
+    p.segmented(vw, ['四分之三', '侧面', '正面', '背面', '头部', '尾部', '远景', '俯视', '斜俯视', '正后方'], 0, (i) =>
       this.setView(VIEW_NAMES[i]),
     );
 

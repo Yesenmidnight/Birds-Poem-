@@ -29,12 +29,6 @@ export interface BodyAttributes {
   triangleCount: number;
 }
 
-/** 口角暗线：从嘴角出发向后下方伸进绒毛里的那一小段（右半身，左半身镜像）。 */
-const GAPE_A: [number, number, number] = [0.15, 3.55, 1.545];
-const GAPE_B: [number, number, number] = [0.31, 3.47, 1.48];
-const GAPE_D = [GAPE_B[0] - GAPE_A[0], GAPE_B[1] - GAPE_A[1], GAPE_B[2] - GAPE_A[2]];
-const GAPE_LEN2 = GAPE_D[0] ** 2 + GAPE_D[1] ** 2 + GAPE_D[2] ** 2;
-
 export function buildBody(params: BodyParams = LONG_TAILED_TIT, cell = 0.055): BodyAttributes {
   const { min, max } = params.bounds;
   const t0 = performance.now();
@@ -42,6 +36,11 @@ export function buildBody(params: BodyParams = LONG_TAILED_TIT, cell = 0.055): B
   const count = net.positions.length / 3;
   // 翼下压毛的覆盖范围：收拢翅羽片的真实投影（随机种子和 Bird 建翅用的一致）
   const wingCover = wingCoverField(wingPlacements(params));
+  // 口角暗线：从嘴角出发向后下方伸进绒毛里的那一小段（右半身，左半身镜像），相对嘴根定位，头移动时跟着走
+  const GAPE_A: [number, number, number] = [params.beakBase[0] + 0.15, params.beakBase[1] - 0.01, params.beakBase[2] + 0.105];
+  const GAPE_B: [number, number, number] = [params.beakBase[0] + 0.31, params.beakBase[1] - 0.09, params.beakBase[2] + 0.04];
+  const GAPE_D = [GAPE_B[0] - GAPE_A[0], GAPE_B[1] - GAPE_A[1], GAPE_B[2] - GAPE_A[2]];
+  const GAPE_LEN2 = GAPE_D[0] ** 2 + GAPE_D[1] ** 2 + GAPE_D[2] ** 2;
 
   const normals = new Float32Array(count * 3);
   const flow = new Float32Array(count * 3);
@@ -148,8 +147,9 @@ export function buildBody(params: BodyParams = LONG_TAILED_TIT, cell = 0.055): B
 
     // 脸颊和喉部最蓬，背上较短
     let furLen = 1.0 + 0.12 * wHead * (1 - smoothstep(0.35, 0.8, ny)) + 0.06 * wChest;
-    // 背上短一截，从后颈往头顶逐渐放长，颈背交界处不留一道棱
-    furLen -= 0.16 * smoothstep(0.0, 0.6, ny) * (1 - smoothstep(2.75, 3.4, y)) * (1 - smoothstep(-0.3, 0.3, z));
+    // 背上短一截，从后颈往头顶逐渐放长，颈背交界处不留一道棱（高度跟随头部椭球：后枕在 head.c 下方 0.4~0.9）
+    const neckY = params.head.c[1] - 0.9;
+    furLen -= 0.16 * smoothstep(0.0, 0.6, ny) * (1 - smoothstep(neckY, neckY + 0.65, y)) * (1 - smoothstep(-0.3, 0.3, z));
     // 眼周只在紧贴睑裂的那一圈压秃，毛从睑缘外一点点就放长：露出来的眼睑壳只剩一线深色细睑缘，
     // 壳外沿整圈埋进眼周白绒毛底下，微距下不会看到一圈光滑的白色实心环；
     // 压秃半径仍略大于睑缘（上 0.52r、下 0.5r），贴着眼圈的毛不会立成一圈睫毛

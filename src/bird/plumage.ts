@@ -2,8 +2,23 @@
  * 北长尾山雀的羽色分区（白头型）。输入是鸟自身的局部坐标、体表法线和离眼中轴线的距离，
  * 输出基础反照率。分区只看位置和朝向，不看躯体由哪块椭球构成，边界再用噪声打散，
  * 这样黑带、粉晕都是连续的一整片，而不是跟着建模骨骼走的花斑。
- * 所有色区都画在同一层绒毛上：白头、炭黑背带、玫瑰粉棕的肩胁是同一身毛的不同颜色。
+ * 所有色区都画在同一层绒毛上：白头、炭黑鞍背、玫瑰粉棕的肩胁是同一身毛的不同颜色。
+ * 口腔、口角的位置从 bodySdf 的 params（嘴根、喙轴）派生，头部移动时自动跟随，不留旧常数。
  */
+import { LONG_TAILED_TIT } from './bodySdf';
+
+const { beakBase, beakDir, head } = LONG_TAILED_TIT;
+const bl = Math.hypot(beakDir[0], beakDir[1], beakDir[2]);
+// 喙轴在 yz 平面里的方向，和垂直于它的"上"方向
+const dy = beakDir[1] / bl;
+const dz = beakDir[2] / bl;
+const uy = dz;
+const uz = -dy;
+const f = (v: number): string => v.toFixed(4);
+/** 口角线两端：相对嘴根的偏移与 body.ts 的 GAPE_A / GAPE_B 完全一致 */
+const GAPE_A = [beakBase[0] + 0.15, beakBase[1] - 0.01, beakBase[2] + 0.105];
+const GAPE_B = [beakBase[0] + 0.31, beakBase[1] - 0.09, beakBase[2] + 0.04];
+
 export const PLUMAGE_PARS = /* glsl */ `
 uniform vec3 uColWhite;
 uniform vec3 uColPink;
@@ -16,17 +31,15 @@ vec3 plumage( vec3 p, vec3 n, float eyeD ) {
 	vec3 col = uColWhite;
 	float side = smoothstep( 0.25, 0.75, abs( n.x ) );
 
-	// 上背黑带：从颈后横过背中段，两缘用噪声打散
-	float up = smoothstep( 0.3, 0.8, n.y );
-	float bandZ = ( 1.0 - smoothstep( 0.25, 0.7, p.z ) ) * smoothstep( -2.2, -1.4, p.z );
-	float mantle = up * bandZ * ( 1.0 - smoothstep( 2.95, 3.3, p.y ) );
-	// 颈侧的黑纹沿侧面往下连到翅根
-	float nape =
-		smoothstep( 0.45, 0.85, abs( n.x ) ) *
-		( 1.0 - smoothstep( 0.0, 0.5, p.z ) ) *
-		smoothstep( 2.6, 3.1, p.y ) *
-		( 1.0 - smoothstep( 3.3, 3.65, p.y ) );
-	mantle = max( mantle, nape * 0.8 );
+	// T 字黑鞍背：后枕白毛下方一道横过上背的深炭黑横带（约 0.6 cm 宽），沿脊柱正中线收窄成一条细纵带延伸到尾根。
+	// 横带的前缘在中线处紧贴后枕（z≈0.15），到肩侧退到翅膀前缘以后（z≈-0.15），不会绕到肩膀前面；
+	// 两缘用噪声打散；纵带只在中线附近约 0.4 cm 宽，到尾上覆羽之前停
+	float up = smoothstep( 0.15, 0.6, n.y );
+	float zFront = 0.15 - 0.3 * smoothstep( 0.3, 0.9, abs( p.x ) );
+	float behindNape = 1.0 - smoothstep( zFront - 0.15, zFront, p.z );
+	float band = behindNape * smoothstep( -0.85, -0.55, p.z );
+	float spine = ( 1.0 - smoothstep( 0.1, 0.26, abs( p.x ) ) ) * smoothstep( -2.9, -2.5, p.z ) * ( 1.0 - smoothstep( -0.75, -0.55, p.z ) );
+	float mantle = up * max( band, spine );
 	mantle = smoothstep( 0.35, 0.65, mantle + ( snoise( p * 9.0 ) - 0.5 ) * 0.16 );
 
 	// 两胁、下腹到尾下覆羽的葡萄酒粉晕，越靠后越浓
@@ -41,19 +54,28 @@ vec3 plumage( vec3 p, vec3 n, float eyeD ) {
 	float rose =
 		side *
 		smoothstep( 1.8, 2.6, p.y ) *
-		( 1.0 - smoothstep( 3.05, 3.4, p.y ) ) *
+		( 1.0 - smoothstep( ${f(head.c[1] - 0.55)}, ${f(head.c[1] - 0.2)}, p.y ) ) *
 		( 1.0 - smoothstep( -0.3, 0.9, p.z ) );
 	rose = smoothstep( 0.2, 0.7, rose + ( snoise( p * 6.0 ) - 0.5 ) * 0.3 );
 	rose *= 0.7 + 0.3 * smoothstep( 2.5, 3.1, p.y );
-	col = mix( col, mix( uColRose, uColWhite, 0.2 ), rose * ( 1.0 - mantle ) );
 
+	// 披肩：脊柱黑带两侧、收拢翅上方两团玫瑰粉→白的蓬松肩羽绒毛，像披肩一样搭在翅上缘；
+	// 离中线越远、越靠近翅上缘越粉，往上被横带压住，往后淡出到粉晕
+	float capeSide = smoothstep( 0.12, 0.5, abs( p.x ) ) * ( 1.0 - smoothstep( 1.0, 1.35, abs( p.x ) ) );
+	float capeZ = smoothstep( -2.5, -1.7, p.z ) * ( 1.0 - smoothstep( -0.7, 0.0, p.z ) );
+	float capeY = smoothstep( 2.3, 2.8, p.y );
+	float cape = capeSide * capeZ * capeY * ( 0.45 + 0.55 * ( 1.0 - up ) );
+	cape = smoothstep( 0.15, 0.65, cape + ( snoise( p * 5.0 + 7.0 ) - 0.5 ) * 0.3 );
+	rose = max( rose, cape );
+
+	col = mix( col, mix( uColRose, uColWhite, 0.2 ), rose * ( 1.0 - mantle ) );
 	col = mix( col, uColBlack, mantle );
 
 	// 收拢的翼面底下的体表不再垫深色：正羽底下有自己的深色底板，羽片之间不透体表；
 	// 抬翅时露出来的这一块就是正常的白/粉皮肤，不是一块灰秃斑
 
 	// 头顶一层极淡的暖粉
-	float crown = smoothstep( 0.5, 0.95, n.y ) * smoothstep( 2.8, 3.3, p.y ) * ( 1.0 - smoothstep( 1.0, 1.7, p.z ) );
+	float crown = smoothstep( 0.5, 0.95, n.y ) * smoothstep( ${f(head.c[1] - 0.6)}, ${f(head.c[1] - 0.1)}, p.y ) * ( 1.0 - smoothstep( 1.0, 1.7, p.z ) );
 	col = mix( col, uColCrown, crown * 0.3 );
 
 	// 眼睑壳底下的体表是深色皮肤（露出来的只有眼圈以内，其余都被眼睑盖住）
@@ -62,9 +84,10 @@ vec3 plumage( vec3 p, vec3 n, float eyeD ) {
 	// 口腔：张嘴时从上下颌之间露出来的体表是深暗的口腔色（body.ts 已把这里的毛压到零）。
 	// 范围严格收在合拢时被上下颌盖住的颌根截面之内（半宽 0.10、上 0.09、下 -0.02，往外 0.03 渐隐）：
 	// 合拢时颌根四周露出的那一圈皮肤仍是浅色，张嘴时颌根之间露出来的才是暗的口腔。
-	// 头的前脸比嘴根还鼓出约 0.1 cm，所以沿喙轴不设下限、只设上限
-	float bUp = ( p.y - 3.56 ) * 0.995 + ( p.z - 1.44 ) * 0.0995;
-	float bAl = -( p.y - 3.56 ) * 0.0995 + ( p.z - 1.44 ) * 0.995;
+	// 头的前脸比嘴根还鼓出约 0.1 cm，所以沿喙轴不设下限、只设上限。
+	// 坐标系沿喙轴：bUp 垂直于喙轴向上，bAl 沿喙轴向前，原点在嘴根（都从 params 派生）
+	float bUp = ( p.y - ${f(beakBase[1])} ) * ${f(uy)} + ( p.z - ${f(beakBase[2])} ) * ${f(uz)};
+	float bAl = ( p.y - ${f(beakBase[1])} ) * ${f(dy)} + ( p.z - ${f(beakBase[2])} ) * ${f(dz)};
 	float mouth =
 		( 1.0 - smoothstep( 0.10, 0.135, abs( p.x ) ) ) *
 		( 1.0 - smoothstep( 0.09, 0.12, bUp ) ) *
@@ -73,8 +96,8 @@ vec3 plumage( vec3 p, vec3 n, float eyeD ) {
 	col = mix( col, uColSkin * 0.45, mouth );
 
 	// 口角：从嘴角向后下方延伸进绒毛里的一道细微暗线
-	vec3 ga = vec3( 0.15, 3.55, 1.545 );
-	vec3 gd = vec3( 0.16, -0.08, -0.065 );
+	vec3 ga = vec3( ${f(GAPE_A[0])}, ${f(GAPE_A[1])}, ${f(GAPE_A[2])} );
+	vec3 gd = vec3( ${f(GAPE_B[0] - GAPE_A[0])}, ${f(GAPE_B[1] - GAPE_A[1])}, ${f(GAPE_B[2] - GAPE_A[2])} );
 	vec3 gq = vec3( abs( p.x ), p.y, p.z ) - ga;
 	float gt = clamp( dot( gq, gd ) / dot( gd, gd ), 0.0, 1.0 );
 	float gape = 1.0 - smoothstep( 0.01, 0.03, length( gq - gd * gt ) );
