@@ -13,11 +13,13 @@ import { BEAK_DROOP, BEAK_HINGE_DEPTH, BEAK_NOTCH, BEAK_REF_LEN, beakHalfWidth, 
 import { clamp, lerp, smoothstep } from '../util/math';
 
 /**
- * 翅前缘 / 上缘处压毛的起点（cm，0 = 正好从羽片覆盖边缘往里才开始压）：翅边以外（肩背、胸侧）的毛全长，
- * 顺毛流垂搭盖住羽根上沿和前缘——上一版把翅边外 0.1~0.12 的肩毛也压短了，次级飞羽和覆羽顶部的生硬黑锯齿
- * 整条露出来成了一道黑断崖。翅边底下的过渡带只有 0.015~0.04 宽：贴着翅边往里立刻压到底，半长的毛尖来不及穿出羽片
+ * 翅前缘 / 上缘处压毛的起点（cm，负值 = 从覆盖边缘往外这么多就开始压）。
+ * 上缘（WING_FUR_INSET_TOP = 0）：翅边以外（肩背）的毛全长，顺毛流垂搭盖住覆羽 / 飞羽的上沿羽根——把翅边外的
+ * 肩毛压短会把次级飞羽和覆羽顶部生硬的黑锯齿整条露出来成一道黑断崖；翅边底下的过渡带只有 0.015 宽。
+ * 前缘（WING_FUR_INSET = -0.08）：胸侧的毛从翅边以外 0.08 就渐短——腕弯前角是收拢翅唯一从正面 / 斜前露出来的
+ * 黑弧，胸毛全长倒过来会把它整个盖住；0.08 以外的胸毛仍是全长，毛尖自然搭在翅前角上，黑弧从毛窝里露出来
  */
-const WING_FUR_INSET = 0;
+const WING_FUR_INSET = -0.08;
 const WING_FUR_INSET_TOP = 0;
 /** 翅下缘、翅尖以外仍保持短绒的距离（cm，负值 = 从覆盖边缘往外再压这么多）：翅的下缘和尖才干净。 */
 const WING_FUR_UNDER = -0.1;
@@ -120,13 +122,14 @@ export function buildBody(params: BodyParams = LONG_TAILED_TIT, cell = 0.055): B
     let ty = -0.32 - 0.5 * low * (1 - Math.abs(ny));
     let tz = -1.0;
     // 肩羽（黑领后方到背中短尖之间的背上部两侧）的毛流略向后内侧倒：焦糖肉桂→奶白的肩羽顺着毛流向背中央汇成 V 字
-    const scapZone = smoothstep(-0.4, -0.7, z) * (1 - smoothstep(-1.4, -1.7, z)) * smoothstep(2.85, 3.05, y);
-    const scapTilt = scapZone * smoothstep(0.15, 0.45, Math.abs(x)) * (1 - smoothstep(0.55, 0.75, Math.abs(x)));
+    const scapZone = smoothstep(-0.4, -0.7, z) * (1 - smoothstep(-1.4, -1.7, z)) * smoothstep(2.75, 2.95, y);
+    // 体型横向加宽后肩顶在 |x| ≈ 1.0~1.2：肩羽区的横向范围跟着外移
+    const scapTilt = scapZone * smoothstep(0.2, 0.6, Math.abs(x)) * (1 - smoothstep(0.85, 1.15, Math.abs(x)));
     // 翅上缘外侧 0.3 cm 以内（还没压毛）的肩背长毛向下、向外侧倒，毛尖漫过收拢翅的上缘把它搭住——
     // 只有翅边以外长出来的毛才会平躺着盖在翅上；翅边底下压短的毛绝不能穿出来（穿出来是一根根立着的白点）
     const wingCoverHere = wingCover.sample(y, z);
-    // 垂搭区间比肩羽区更长：整条翅上缘（从肩前到臀部）以外 0.3 cm 内的长毛都向下外侧倒，盖住羽根上沿
-    const drapeZone = (1 - smoothstep(-0.15, 0.05, z)) * (1 - smoothstep(-2.0, -2.4, z)) * smoothstep(2.7, 2.95, y);
+    // 垂搭区间比肩羽区更长：整条翅上缘（从腮下的翅前角 z +0.2 到臀部）以外 0.3 cm 内的长毛都向下外侧倒，盖住羽根上沿
+    const drapeZone = (1 - smoothstep(0.1, 0.3, z)) * (1 - smoothstep(-2.0, -2.4, z)) * smoothstep(2.7, 2.95, y);
     const drapeTilt = drapeZone * smoothstep(0.25, 0.55, ny) * smoothstep(-0.3, -0.08, wingCoverHere) * (1 - smoothstep(0.0, 0.04, wingCoverHere));
     tx = tx * (1 - scapTilt) - 0.22 * Math.sign(x) * scapTilt + 0.3 * Math.sign(x) * drapeTilt;
     ty -= 0.35 * drapeTilt;

@@ -63,14 +63,15 @@ vec3 plumage( vec3 p, vec3 n, float eyeD, float boneW ) {
 	// 顺毛流方向（z）拉长的噪声把前后缘打散：后脑的白毛丝一缕缕自然叠在黑领前缘上，不是刀切的直线。
 	// 肩侧（黑领两端）的打散幅度减半：肩前的毛沿法线往上往前翘，黑毛尖往前戳进白胸毛里是一粒粒黑渣
 	float fray = ( snoise( vec3( p.x * 14.0, p.y * 14.0, p.z * 3.5 ) ) - 0.5 ) * 0.2 + ( snoise( p * 9.0 ) - 0.5 ) * 0.08;
-	fray *= 1.0 - 0.5 * smoothstep( 0.55, 0.85, af );
+	fray *= 1.0 - 0.5 * smoothstep( 0.75, 1.1, af );
 	// z 朝尾为负：在前缘之后（p.z < zFront）、在后缘之前（p.z > zBack）才是黑领里
 	float collar = ( 1.0 - smoothstep( zFront - 0.05, zFront + 0.18, p.z + fray ) ) * smoothstep( zBack - 0.18, zBack + 0.05, p.z + fray );
-	// 只在肩背以上：从背顶往两侧下到翅根上缘为止，不顺着两胁往下淌。例外是黑领两端（|x| > 0.6）：顺着肩侧
-	// 一直向下延伸到收拢翅前缘根部（y ≈ 2.5），和黑翅前缘连通——侧面看黑领是"流进"黑翅里的，
-	// 不是夹在白毛中间、下缘悬在翅前缘半腰的一根黑条（下缘悬空时黑毛尖朝下喷在白胸毛上，就是侧面那道夹缝）
-	float lateral = smoothstep( 0.55, 0.85, af );
-	collar *= mix( smoothstep( 0.05, 0.35, n.y ), smoothstep( -0.4, 0.0, n.y ) * smoothstep( 2.45, 2.6, p.y ), lateral );
+	// 只在肩背以上：从背顶往两侧下到翅根上缘为止，不顺着两胁往下淌。例外是黑领两端：顺着肩侧一直向下延伸到
+	// 收拢翅的腕弯前角（y ≈ 2.9~3.0，翅根前移后前角就在腮下），和黑翅前缘连通——侧面看黑领是"流进"黑翅里的，
+	// 不是夹在白毛中间、下缘悬在翅前缘半腰的一根黑条（下缘悬空时黑毛尖朝下喷在白胸毛上，就是侧面那道夹缝）。
+	// 体型横向加宽后肩侧从 |x| ≈ 0.8 才开始：阈值跟着外移
+	float lateral = smoothstep( 0.75, 1.1, af );
+	collar *= mix( smoothstep( 0.05, 0.35, n.y ), smoothstep( -0.4, 0.0, n.y ) * smoothstep( 2.75, 2.95, p.y ), lateral );
 	float mantle = collar * ( 1.0 - smoothstep( 0.02, 0.06, boneW ) );
 
 	// 两胁、下腹到尾下覆羽的葡萄酒粉晕，越靠后越浓
@@ -83,13 +84,13 @@ vec3 plumage( vec3 p, vec3 n, float eyeD, float boneW ) {
 	// ------------------------------------------------------------------ 肩羽（Scapulars）：焦糖肉桂 → 奶白的 V 字
 	// 两束肩羽从黑领两端的后下方（收拢翅根的上缘）顺着向后内倾的毛流斜向下：上半段是温暖浓郁的焦糖肉桂 /
 	// 暖赤陶杏（uColRose），下半段渐变成干净蓬松的奶油白长绒毛；左右两束在黑色短尖的正后方、背中央汇合成 V 字，
-	// 自然搭盖在收拢翅根部上方。中心线从翅根上缘 (|x| 0.80, z -0.62) 到背中央 (|x| 0.12, z -1.5)
-	vec2 sq = vec2( af, p.z ) - vec2( 0.82, -0.62 );
-	vec2 sd = vec2( -0.76, -0.8 );
+	// 自然搭盖在收拢翅根部上方。中心线从翅根上缘（体型加宽后在 |x| 1.1、z -0.6）到背中央 (|x| 0.12, z -1.5)
+	vec2 sq = vec2( af, p.z ) - vec2( 1.1, -0.6 );
+	vec2 sd = vec2( -0.98, -0.9 );
 	float st = clamp( dot( sq, sd ) / dot( sd, sd ), 0.0, 1.0 );
 	float sdst = length( sq - sd * st );
 	float scap = 1.0 - smoothstep( 0.2, 0.42, sdst + ( snoise( p * 7.0 + 2.0 ) - 0.5 ) * 0.16 );
-	scap *= smoothstep( 0.1, 0.4, n.y ) * smoothstep( 2.8, 3.0, p.y );
+	scap *= smoothstep( 0.1, 0.4, n.y ) * smoothstep( 2.7, 2.95, p.y );
 	// 黑领压住肩羽的上缘
 	scap *= 1.0 - mantle;
 	// 焦糖肉桂占上半段，到背中央附近才化成奶油白——两束在黑色短尖正后方汇合
