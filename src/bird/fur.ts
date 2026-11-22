@@ -265,20 +265,47 @@ const FUR_EXTRA_LIGHT = /* glsl */ `
 `;
 
 /**
- * 翼臂绒毛垫（wingTail.ts 的 buildWingArm 底面）专用的增量：满展态挂在翅枢轴下，收拢时随 uArmOpen 把整块垫缩回
- * 枢轴、毛长同步压到 0（收拢态一点不露）；配色不走 plumage()（那是躯干的分区），而是背脊炭黑 / 前缘包边 + 腹面纯白，
- * 靠肩内侧过渡到肩羽的奶白。躯干绒毛用的着色器字符串完全不动，只有 arm 实例才用下面这些替换过的版本。
+ * 翼臂绒毛垫（wingTail.ts 的 buildWingArm 底面）专用的增量：底面是满展态、挂在翅枢轴下；收拢 / 展开按骨链每一站的绑定折拢
+ * （wingTail.ts 的 ARM_FOLDED_JOINTS）：截面中心沿直线从收拢态位置走到满展态位置、截面绕中心从收拢态标架转到满展态标架，
+ * uArmOpen 0 → 1 全程与同一块骨头上的飞羽根部一对一同进同退；只在最贴近收拢态的窄区间（0 ~ 0.18）把毛长压到 0 并微微内收埋进躯干绒毛。
+ * 配色不走 plumage()（那是躯干的分区），而是背脊炭黑 / 前缘包边 + 腹面纯白，靠肩内侧过渡到肩羽的奶白。
+ * 躯干绒毛用的着色器字符串完全不动，只有 arm 实例才用下面这些替换过的版本。
  */
-const ARM_RETRACT = 'smoothstep( 0.25, 0.6, uArmOpen )';
+const ARM_FOLD_GLSL = /* glsl */ `
+// 折拢绑定（wingTail.ts 的 buildWingArm 按骨链每一站写入）：收拢态这一站的中心、相对满展态骨链中心的截面偏移、
+// 满展态标架 → 收拢态标架的旋转（轴 + 角）
+attribute vec3 aArmC;
+attribute vec3 aArmO;
+attribute vec4 aArmRot;
+uniform vec3 uArmInward;
+// 方向（截面偏移、法线、毛流）从收拢态转回满展态：角度随 uArmOpen 从 0 转满
+vec3 armFoldDir( vec3 d ) {
+	float ang = aArmRot.w * ( 1.0 - uArmOpen );
+	float c = cos( ang ), s = sin( ang );
+	return d * c + cross( aArmRot.xyz, d ) * s + aArmRot.xyz * dot( aArmRot.xyz, d ) * ( 1.0 - c );
+}
+// 中心沿直线从收拢态位置走到满展态位置（和同一块骨头上飞羽根部的直线路径重合）：uArmOpen = 1 逐点恒等，= 0 折回体侧；
+// 贴收拢态的窄区间（0 ~ 0.18）再往体内挪 uArmInward
+vec3 armFold( vec3 p ) {
+	return mix( aArmC, p - aArmO, uArmOpen ) + armFoldDir( aArmO ) - uArmInward * ( 1.0 - smoothstep( 0.0, 0.18, uArmOpen ) );
+}
+`;
 const ARM_VERTEX_PARS = FUR_VERTEX_PARS + /* glsl */ `
 uniform float uArmOpen;
+${ARM_FOLD_GLSL}
 `;
 const ARM_VERTEX_MAIN = FUR_VERTEX_MAIN.replace(
   'vec3 base = ( sk * vec4( position, 1.0 ) ).xyz;',
-  'vec3 base = ( sk * vec4( position, 1.0 ) ).xyz * ' + ARM_RETRACT + ';',
+  'vec3 base = armFold( ( sk * vec4( position, 1.0 ) ).xyz );',
+).replace(
+  'vec3 nL = normalize( mat3( uBones[0] ) * normal * wNeck + mat3( uBones[1] ) * normal * wHead + normal * wBody );',
+  'vec3 nL = armFoldDir( normalize( mat3( uBones[0] ) * normal * wNeck + mat3( uBones[1] ) * normal * wHead + normal * wBody ) );',
+).replace(
+  'vec3 fL = normalize( mat3( uBones[0] ) * aFlow * wNeck + mat3( uBones[1] ) * aFlow * wHead + aFlow * wBody );',
+  'vec3 fL = armFoldDir( normalize( mat3( uBones[0] ) * aFlow * wNeck + mat3( uBones[1] ) * aFlow * wHead + aFlow * wBody ) );',
 ).replace(
   'furK = mix( furK, min( furK, 0.3 ), aJaw * smoothstep( 0.04, 0.2, uJawOpen ) );',
-  'furK = mix( furK, min( furK, 0.3 ), aJaw * smoothstep( 0.04, 0.2, uJawOpen ) );\n\tfurK *= ' + ARM_RETRACT + ';',
+  'furK = mix( furK, min( furK, 0.3 ), aJaw * smoothstep( 0.04, 0.2, uJawOpen ) );\n\t// 贴近收拢态的窄区间（uArmOpen 0 ~ 0.18）毛长平滑压到 0：垫子是从躯干绒毛里长出来 / 缩回去的\n\tfurK *= smoothstep( 0.0, 0.18, uArmOpen );',
 );
 if (ARM_VERTEX_MAIN === FUR_VERTEX_MAIN) throw new Error('fur.ts: 翼臂顶点着色器的替换锚点失效');
 const ARM_FRAGMENT_PARS = FUR_FRAGMENT_PARS + /* glsl */ `
@@ -300,14 +327,18 @@ const ARM_SURFACE = FUR_SURFACE.replace(
 );
 if (ARM_SURFACE === FUR_SURFACE) throw new Error('fur.ts: 翼臂片元着色器的替换锚点失效');
 
-/** 翼臂绒毛垫的"皮肤"投影用：和壳层同一套内收缩放，收拢态的影子不会留下一整只展开的翼臂。 */
-export function makeFurArmDepth(open: IUniform): ShaderMaterial {
+/** 翼臂绒毛垫的"皮肤"投影用：和壳层同一套折拢（ARM_FOLD_GLSL），收拢态的影子不会留下一整只展开的翼臂。 */
+export function makeFurArmDepth(open: IUniform, inward: Vector3): ShaderMaterial {
   return new ShaderMaterial({
-    uniforms: { uArmOpen: open },
+    uniforms: {
+      uArmOpen: open,
+      uArmInward: { value: inward },
+    },
     vertexShader: /* glsl */ `
 uniform float uArmOpen;
+${ARM_FOLD_GLSL}
 void main() {
-	gl_Position = projectionMatrix * modelViewMatrix * vec4( position * ${ARM_RETRACT}, 1.0 );
+	gl_Position = projectionMatrix * modelViewMatrix * vec4( armFold( position ), 1.0 );
 }
 `,
     fragmentShader: /* glsl */ `
@@ -326,7 +357,8 @@ export class Fur {
   /** 最里层的实心"皮肤"（翼臂垫要给它换投影深度材质）。 */
   readonly core: Mesh;
 
-  private readonly shells: Mesh<InstancedBufferGeometry, ShaderMaterial>;
+  /** 壳层网格（实例化的底面）：翼臂垫按展翅度直接开关它、改画多少层。 */
+  readonly shells: Mesh<InstancedBufferGeometry, ShaderMaterial>;
   private readonly maxShells: number;
 
   constructor(
@@ -334,7 +366,7 @@ export class Fur {
     lighting: LightingUniforms,
     settings: FurSettings = FUR_DEFAULTS,
     maxShells = 96,
-    arm?: { open: IUniform; span: Vector3 },
+    arm?: { open: IUniform; span: Vector3; inward: Vector3 },
   ) {
     this.maxShells = maxShells;
     this.trianglesPerShell = (base.index?.count ?? 0) / 3;
@@ -368,6 +400,7 @@ export class Fur {
     if (arm) {
       this.uniforms.uArmOpen = arm.open;
       this.uniforms.uArmSpan = { value: arm.span };
+      this.uniforms.uArmInward = { value: arm.inward };
       // 翼上背面前缘（小 / 中覆羽区）的深暖炭黑，和鞍领同一色系；靠肩内侧过渡到肩羽下半段的奶白
       this.uniforms.uColArmDorsal = { value: rgb('#2a2528') };
       this.uniforms.uColArmShoulder = { value: rgb('#e7d5ca') };
@@ -417,7 +450,8 @@ export class Fur {
   }
 
   setShellCount(n: number): void {
-    const count = Math.max(2, Math.min(this.maxShells, Math.round(n)));
+    // 下限 1 层：翼臂垫从躯干绒毛里长出来时先只有贴着皮肤的一层，再一层层加到满
+    const count = Math.max(1, Math.min(this.maxShells, Math.round(n)));
     this.shells.geometry.instanceCount = count;
     this.uniforms.uShellCount.value = count;
   }

@@ -344,9 +344,10 @@ export class FidgetLayer extends MotionLayer {
 export const SPREAD_DURATION = 1.95;
 
 /**
- * 展翅扑翼演示：0.4 s 把双翅从收拢平滑展开（三段 Z 字折叠链打开、飞羽折扇张成短圆的百褶扇），
- * 展满后轻扑两下（下扑略快、上扬略慢，随扑翼微微前扫、翼面随之翻转），停一拍，再 0.55 s 平滑收拢。
- * 期间身体微微下蹲前俯、尾羽略展，像是枝上扑棱一下整理羽毛。
+ * 展翅扑翼演示：0.5 s 把双翅从收拢平滑展开（三段 Z 字折叠链打开、飞羽折扇张成短圆的百褶扇），
+ * 扑翼在展开的后半程就接上来（0.18 s 起扑、0.5 s 到满幅）：翅膀一边展开一边上扬，展满那一刻正好从上扬过渡进
+ * 第一下下扑，中间不停顿；轻扑两下后（随扑翼微微前扫、翼面随之翻转）从最后一次上扬的顶点开始收拢（1.2 s 起 0.7 s），
+ * 扑幅随收拢柔和回落，翅边收边落回体侧。期间身体微微下蹲前俯、尾羽略展，像是枝上扑棱一下整理羽毛。
  */
 export class SpreadLayer extends MotionLayer {
   private t = Infinity;
@@ -363,11 +364,12 @@ export class SpreadLayer extends MotionLayer {
       this.t = Infinity;
       return;
     }
-    // 展翅度：0.4 s 展开，1.4 s 起收拢
-    const open = minJerk(t / 0.4) * (1 - minJerk((t - 1.4) / 0.55));
-    // 扑翼包络：0.4 s 起扑、1.3 s 停，两端柔和起落；两个扑翼周期
-    const env = minJerk((t - 0.4) / 0.12) * (1 - minJerk((t - 1.12) / 0.18));
-    const ph = (t - 0.4) * TAU * 2.25;
+    // 展翅度：0.5 s 展开、1.2 s 起收拢（收拢的起点对准最后一次上扬的顶点，见下面的相位）
+    const open = minJerk(t / 0.5) * (1 - minJerk((t - 1.2) / 0.7));
+    // 扑翼包络：展开的后半程起扑（0.18 ~ 0.5 s 升到满幅）、随收拢柔和回落（1.2 ~ 1.6 s）
+    const env = minJerk((t - 0.18) / 0.32) * (1 - minJerk((t - 1.2) / 0.4));
+    // 相位：0.2 s 从零往上扬、0.31 s 到顶（展开到六成时），展满（0.5 s）后紧接着第一下下扑；1.2 s 恰好又是上扬顶点
+    const ph = (t - 0.2) * TAU * 2.25;
     const flap = (0.22 + 0.42 * Math.sin(ph)) * env;
     for (const side of ['left', 'right'] as const) {
       pose.wing[side].open += open;

@@ -459,15 +459,21 @@ export class WingRig {
   }
 }
 
+/** 收拢态底壳肩段（也是翼臂垫折拢后的截面）的朝向：肱骨朝后略下、翼面背侧朝外上（侧面看就是贴着体侧的那一片）。 */
+const FOLDED_DIR = new Vector3(0, -0.15, -1).normalize();
+const FOLDED_DORSAL = new Vector3(0.94, 0.33, 0.05);
 /** 翼内底壳肩段的展开旋转：和肱骨段一样，把贴在体侧、朝后的那片壳转到翼平面里朝外。 */
-const PANEL_ROT = frameRotation(
-  new Vector3(0, -0.15, -1).normalize(),
-  new Vector3(0.94, 0.33, 0.05),
-  wingDir(0),
-  DORSAL_N.clone(),
-);
+const PANEL_ROT = frameRotation(FOLDED_DIR, FOLDED_DORSAL, wingDir(0), DORSAL_N.clone());
 /** 满展时底壳整体往后挪一点、略微抬离翼平面：前缘和覆羽根对齐，不伸出翅的前缘。 */
 const PANEL_SHIFT = wingPlane(0, -0.08, 0.02);
+
+/**
+ * 翼臂绒毛垫贴收拢态的内收量（枢轴坐标，按左右翅镜像，指向体内）：收拢态整块垫往体侧里挪 0.2 埋进躯干绒毛。
+ * fur.ts 的 arm 顶点着色器只在 uArmOpen 0 ~ 0.18 之间用它（和毛长同一条门限）。
+ */
+export function wingArmInward(side: 1 | -1): Vector3 {
+  return FOLDED_DORSAL.clone().normalize().multiplyScalar(-0.2).multiply(new Vector3(side, 1, 1));
+}
 
 /** 一片羽在侧面 (y, z) 上的投影，翼面底板和翼下压毛都用它算羽片的覆盖范围。 */
 interface Placement {
@@ -954,7 +960,9 @@ export function buildTail(p: BodyParams): FeatherSet {
 // 鸟翅的前半幅（前翼膜、腋羽、翼下覆羽、翼上小中覆羽）本来就是长满厚绒毛的立体肉翼，只有后半幅才是伸出的飞羽：
 // 展开时它从胸腋无缝伸出去，腹面 + 整个前缘包边是纯白绒毛，从下方盖住次级 / 初级飞羽生硬的插片根部；
 // 背侧只在弦向前 36% 隆起一道圆润的炭黑脊（小 / 中覆羽区），大覆羽、初级覆羽的根（离面 0.03~0.04）仍露在脊外面。
-// 收拢态由 uOpen 控制内收（顶点着色器把整块垫按 smoothstep(0.25, 0.6, uOpen) 缩回枢轴、毛长同步压到 0）。
+// 收拢 / 展开由 uOpen 控制折拢（绑定见 ARM_FOLDED_JOINTS，顶点着色器见 fur.ts 的 ARM_FOLD_GLSL）：骨链上每一站的截面像一片羽的羽根，
+// 中心沿直线从收拢态位置走到满展态位置、截面绕中心从收拢态标架转到满展态标架，0 → 1 全程和同一块骨头上的飞羽根部同进同退；
+// 只在最贴近收拢态的窄区间（0 ~ 0.18）把毛长压到 0 并微微内收埋进躯干绒毛。
 // ---------------------------------------------------------------------------------------------
 /** 翼臂各站（t = 0 肩、1 肘、2 腕、3 腕掌根）的截面参数：弦向前伸 l、向后伸 c、背脊高、腹垫厚。 */
 const ARM_KEYS = {
@@ -975,9 +983,54 @@ function armRidge(xi: number): number {
   return xi > 0.64 ? powS(Math.sin((Math.PI * (xi - 0.64)) / 0.36), 0.7) : 0;
 }
 
+// ---------------------------------------------------------------------------------------------
+// 折拢绑定：收拢态骨链各站（枢轴坐标、右翅；t = 0 肩、1 肘、2 腕、3 腕掌根），位置和收拢翅各排羽根一致（羽根就长在这些骨头上）：
+// 肱骨从枢轴朝后略下伸到翅的后下角，前臂沿体侧折回前上方（腕），腕掌根再朝前下到初级飞羽根那里。
+// 折点都在平行体侧的平面里拐弯（不绕背侧法线打转，截面标架才不会退化），Chaikin 抹圆。
+// ---------------------------------------------------------------------------------------------
+const ARM_FOLDED_JOINTS: [number, number, number][] = [
+  [0, 0, 0],
+  [0.1, -0.5, -1.5],
+  [0.1, 0.0, -0.72],
+  [0.1, -0.27, -0.22],
+];
+/** Chaikin 抹圆两次的收拢态骨链折线，每个点带骨链参数 t。 */
+function armFoldCurve(): { pts: Vector3[]; ts: number[] } {
+  let pts = ARM_FOLDED_JOINTS.map((j) => new Vector3(j[0], j[1], j[2]));
+  let ts = [0, 1, 2, 3];
+  for (let it = 0; it < 2; it++) {
+    const np = [pts[0]];
+    const nt = [0];
+    for (let i = 0; i < pts.length - 1; i++) {
+      np.push(new Vector3().lerpVectors(pts[i], pts[i + 1], 0.25), new Vector3().lerpVectors(pts[i], pts[i + 1], 0.75));
+      nt.push(lerp(ts[i], ts[i + 1], 0.25), lerp(ts[i], ts[i + 1], 0.75));
+    }
+    np.push(pts[pts.length - 1]);
+    nt.push(ts[ts.length - 1]);
+    pts = np;
+    ts = nt;
+  }
+  return { pts, ts };
+}
+const armTmpA = new Vector3();
+const armTmpB = new Vector3();
+/** 骨链参数 t 处的收拢态中心（outC）和切线（outT）；t < 0（肩后的小帽）沿起始段外推。 */
+function armFoldAt(curve: { pts: Vector3[]; ts: number[] }, t: number, outC: Vector3, outT: Vector3): void {
+  const { pts, ts } = curve;
+  const at = (x: number, out: Vector3): Vector3 => {
+    for (let i = 0; i < ts.length - 1; i++) {
+      if (x <= ts[i + 1]) return out.copy(pts[i]).lerp(pts[i + 1], (x - ts[i]) / (ts[i + 1] - ts[i]));
+    }
+    return out.copy(pts[pts.length - 1]);
+  };
+  at(t, outC);
+  outT.copy(at(t + 0.03, armTmpA)).sub(at(t - 0.03, armTmpB)).normalize();
+}
+
 export function buildWingArm(side: 1 | -1 = 1): BufferGeometry {
-  const NT = 44;
-  const NK = 32;
+  // 底面尽量轻：壳层 = 整张底面 × 14 层 × 2 只翅；截面 16 边形、沿骨链 20 段，在毛底下看不出折线
+  const NT = 20;
+  const NK = 16;
   const T0 = -0.14;
   const T1 = 3.0;
   const E: [number, number] = [JOINT_E[0], JOINT_E[1]];
@@ -1007,11 +1060,22 @@ export function buildWingArm(side: 1 | -1 = 1): BufferGeometry {
   const flow: number[] = [];
   const param: number[] = [];
   const idx: number[] = [];
+  // 折拢绑定（每站一份：收拢态中心、相对满展态骨链中心的截面偏移、满展态标架 → 收拢态标架的旋转）
+  const armC: number[] = [];
+  const armO: number[] = [];
+  const armR: number[] = [];
+  const curve = armFoldCurve();
+  const foldC = new Vector3();
+  const foldT = new Vector3();
   const v = new Vector3();
   for (let i = 0; i <= NT; i++) {
     const t = lerp(T0, T1, i / NT);
     const [bu, bv] = chainPoint(t);
     const [tu, tv] = chainTangent(t);
+    armFoldAt(curve, t, foldC, foldT);
+    // 这一站满展态的骨链中心 / 切线，和把它转到收拢态标架（背侧朝外上）的旋转：截面偏移在着色器里按它反向转 (1 - uOpen) 倍
+    const center = wingPlane(bu, bv);
+    const foldRot = frameRotation(wingPlane(tu, tv).normalize(), DORSAL_N, foldT, FOLDED_DORSAL);
     // 弦向"前"：把切线逆时针转 90°（肱骨段切线 (1, -0.15) → 前向 (0.15, 1)，朝 +v）
     const ku = -tv;
     const kv = tu;
@@ -1035,6 +1099,9 @@ export function buildWingArm(side: 1 | -1 = 1): BufferGeometry {
       const vv = bv + kv * w;
       v.copy(wingPlane(uu, vv, n));
       pos.push(v.x, v.y, v.z);
+      armC.push(foldC.x, foldC.y, foldC.z);
+      armO.push(v.x - center.x, v.y - center.y, v.z - center.z);
+      armR.push(foldRot.axis.x, foldRot.axis.y, foldRot.axis.z, foldRot.angle);
       // 毛流：顺翼展朝腕部流，腹面后半段顺弦向朝后缘流
       const rear = (top ? 0.25 : 1.8) * (1 - xi);
       const f = wingPlane(tu - ku * rear, tv - kv * rear, 0).normalize();
@@ -1067,6 +1134,9 @@ export function buildWingArm(side: 1 | -1 = 1): BufferGeometry {
   g.setAttribute('aRegion', new Float32BufferAttribute(new Float32Array(n * 4), 4));
   g.setAttribute('aPress', new Float32BufferAttribute(param.filter((_, i) => i % 3 === 0), 1));
   g.setAttribute('aJaw', new Float32BufferAttribute(new Float32Array(n), 1));
+  g.setAttribute('aArmC', new Float32BufferAttribute(armC, 3));
+  g.setAttribute('aArmO', new Float32BufferAttribute(armO, 3));
+  g.setAttribute('aArmRot', new Float32BufferAttribute(armR, 4));
   g.setIndex(idx);
   g.computeVertexNormals();
   // 绕序按外向核对一遍：法线要背离截面中心（枢轴坐标里各站的骨点）
@@ -1096,6 +1166,16 @@ export function buildWingArm(side: 1 | -1 = 1): BufferGeometry {
     g.scale(-1, 1, 1);
     const fl = g.attributes.aFlow as BufferAttribute;
     for (let j = 0; j < n; j++) fl.setX(j, -fl.getX(j));
+    // 折拢绑定同步镜像：收拢态中心和截面偏移的 x 取反；旋转按镜像共轭（轴的 x 取反、角度取反，同羽片的 rig）
+    const fc = g.attributes.aArmC as BufferAttribute;
+    const fo = g.attributes.aArmO as BufferAttribute;
+    const fr = g.attributes.aArmRot as BufferAttribute;
+    for (let j = 0; j < n; j++) {
+      fc.setX(j, -fc.getX(j));
+      fo.setX(j, -fo.getX(j));
+      fr.setX(j, -fr.getX(j));
+      fr.setW(j, -fr.getW(j));
+    }
     const ix = g.index!.array as Uint32Array;
     for (let t = 0; t < ix.length; t += 3) {
       const tmp = ix[t + 1];

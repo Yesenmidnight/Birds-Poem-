@@ -143,6 +143,8 @@ export class App {
 
   start(view = 'threequarter'): void {
     this.setView(view);
+    // 预热：把场景里所有材质（包括暂时看不见的翼臂绒毛垫壳层）的着色器程序先编译链接好，第一次展翅不再卡在同步编译上
+    this.renderer.compile(this.scene, this.camera);
     this.renderer.setAnimationLoop(this.tick);
   }
 
