@@ -38,11 +38,14 @@ vec3 plumage( vec3 p, vec3 n, float eyeD ) {
 	float up = smoothstep( 0.15, 0.6, n.y );
 	float zFront = 0.15 - 0.3 * smoothstep( 0.3, 0.9, abs( p.x ) );
 	float behindNape = 1.0 - smoothstep( zFront - 0.15, zFront, p.z );
-	float wedge = 0.95 * pow( clamp( ( p.z + 2.75 ) / 2.9, 0.0, 1.0 ), 0.55 );
-	float inWedge = 1.0 - smoothstep( wedge - 0.1, wedge + 0.14, abs( p.x ) );
+	float wedge = 0.84 * pow( clamp( ( p.z + 2.55 ) / 2.7, 0.0, 1.0 ), 0.72 );
+	float inWedge = 1.0 - smoothstep( wedge - 0.12, wedge + 0.14, abs( p.x ) );
 	float mantle = up * behindNape * inWedge;
-	float fray = ( snoise( p * 9.0 ) - 0.5 ) * 0.2 + ( snoise( p * 26.0 + 3.0 ) - 0.5 ) * 0.12;
-	mantle = smoothstep( 0.3, 0.62, mantle + fray );
+	float fray = ( snoise( p * 9.0 ) - 0.5 ) * 0.26 + ( snoise( p * 26.0 + 3.0 ) - 0.5 ) * 0.14;
+	mantle = smoothstep( 0.28, 0.66, mantle + fray );
+	// 鞍背内部不是一块实心黑板：顺着羽毛方向（z）拉长的丝缕噪声，黑里透出一缕缕暗栗粉
+	float streak = smoothstep( 0.5, 0.84, snoise( vec3( p.x * 14.0, p.y * 14.0, p.z * 3.5 ) ) * 0.5 + 0.5 );
+	vec3 saddle = mix( uColBlack * 0.75, uColRose * 0.24, streak * 0.22 );
 
 	// 两胁、下腹到尾下覆羽的葡萄酒粉晕，越靠后越浓
 	float low = 1.0 - smoothstep( 1.1, 2.8, p.y );
@@ -71,7 +74,7 @@ vec3 plumage( vec3 p, vec3 n, float eyeD ) {
 	rose = max( rose, cape );
 
 	col = mix( col, mix( uColRose, uColWhite, 0.2 ), rose * ( 1.0 - mantle ) );
-	col = mix( col, uColBlack * 0.75, mantle );
+	col = mix( col, saddle, mantle );
 
 	// 收拢的翼面底下的体表不再垫深色：正羽底下有自己的深色底板，羽片之间不透体表；
 	// 抬翅时露出来的这一块就是正常的白/粉皮肤，不是一块灰秃斑
@@ -102,7 +105,7 @@ vec3 plumage( vec3 p, vec3 n, float eyeD ) {
 	// 颌根铰链后方那一小截合拢时露不出来、却盖不住的体表仍是深色皮肤（和嘴角阴影一致，不会在嘴根两侧漏红）；
 	// 只有上下颌之间真正露出来的口腔内部才是暗暖的珊瑚粉棕（线性色）
 	col = mix( col, uColSkin * 0.5, mouth );
-	col = mix( col, vec3( 0.26, 0.075, 0.055 ), mouth * smoothstep( -0.04, 0.04, bAl ) );
+	col = mix( col, vec3( 0.45, 0.14, 0.105 ), mouth * smoothstep( -0.04, 0.04, bAl ) );
 
 	// 口角：从嘴角向后下方延伸进绒毛里的一道细微暗线
 	vec3 ga = vec3( ${f(GAPE_A[0])}, ${f(GAPE_A[1])}, ${f(GAPE_A[2])} );

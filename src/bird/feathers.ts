@@ -146,25 +146,39 @@ vec3 wingSkinDir( vec3 d ) {
 	if ( uOpen < 1e-5 || aRigA.w < 1e-4 ) return d;
 	return mix( d, wingRot( d, aRigC.xyz, aRigC.w * uOpen ), aRigA.w );
 }
-// axis 是这片羽的羽轴方向（收拢态），调用后换成变形后的方向
-vec3 wingSkinPoint( vec3 p, vec3 nrm, inout vec3 axis ) {
+// axis 是这片羽的羽轴方向（收拢态），调用后换成变形后的方向；nOut 是变形（含弧度倾斜）后的法线
+vec3 wingSkinPoint( vec3 p, vec3 nrm, inout vec3 axis, out vec3 nOut ) {
+	nOut = wingSkinDir( nrm );
 	if ( uOpen < 1e-5 ) return p;
 	float w = aRigA.w;
-	p.x = mix( p.x, aMisc.x, smoothstep( 0.0, 0.5, uOpen ) * w );
+	// 每片羽的展开进度略有先后（取羽根坐标的小数部分做每片羽固定的伪随机数；x 取绝对值，左右翅镜像一致）：
+	// 同一排羽不会在同一瞬间一起侧对视线，展开途中不再整排闪成一根根梳子齿。o = 0 恒等、o = 1 满展
+	float r = fract( abs( aRigA.x ) * 13.73 + aRigA.y * 3.17 + aRigA.z * 7.31 );
+	float o = clamp( ( uOpen - 0.18 * r ) / ( 1.0 - 0.18 * r ), 0.0, 1.0 );
+	p.x = mix( p.x, aMisc.x, smoothstep( 0.0, 0.5, o ) * w );
 	if ( w < 1e-4 ) return p;
 	vec3 rel = p - aRigA.xyz;
 	float along = dot( rel, axis );
 	vec3 across = rel - along * axis;
 	// 白翈在横向参数 aFrag.x > 0 的一侧。不能用叉积 axis × nrm 判：左翅是镜像几何，叉积手性反号会选到黑翈那侧
-	float wScale = mix( 1.0, aMisc.y, uOpen * step( 0.0, aFrag.x ) );
+	float wScale = mix( 1.0, aMisc.y, o * step( 0.0, aFrag.x ) );
 	// 满展时羽尖放宽成圆润的汤匙头（收拢态不受影响）：越靠羽尖横向放得越宽，羽尖不再是尖飞镖
 	float u = aSize.x > 1e-5 ? clamp( along / aSize.x, 0.0, 1.0 ) : 0.0;
-	wScale *= 1.0 + uOpen * aMisc.w * smoothstep( 0.45, 1.0, u );
-	float lScale = mix( 1.0, aRigB.w, uOpen );
+	wScale *= 1.0 + o * aMisc.w * smoothstep( 0.45, 1.0, u );
+	float lScale = mix( 1.0, aRigB.w, o );
 	rel = axis * ( along * lScale ) + across * wScale;
-	float ang = aRigC.w * uOpen;
+	// 弧度：满展时横向朝腹侧凹成匙形、羽尖往背侧微拱（随 o 长出来，收拢态为零）；展开途中再叠一层中段最大、
+	// 两端为零的弯折——羽片正好转到与视线平行时露出的是一条有宽度的弯月，而不是一根发丝细线。法线跟着倾斜；
+	// 底壳没有 aSize，不参与
+	float mid = sin( 3.14159265 * o );
+	float acr = length( across );
+	float invW = aSize.y > 1e-5 ? 1.0 / aSize.y : 0.0;
+	float invL = aSize.x > 1e-5 ? 1.0 / aSize.x : 0.0;
+	rel += nrm * ( ( 0.06 * o + 0.12 * mid ) * along * along * invL - ( 0.22 * o + 0.35 * mid ) * acr * acr * invW );
+	nOut = mix( nOut, wingRot( normalize( nrm + across * ( invW * ( 0.44 * o + 0.7 * mid ) ) ), aRigC.xyz, aRigC.w * o ), w );
+	float ang = aRigC.w * o;
 	axis = wingRot( axis, aRigC.xyz, ang );
-	vec3 q = wingRot( rel, aRigC.xyz, ang ) + aRigA.xyz + uOpen * aRigB.xyz;
+	vec3 q = wingRot( rel, aRigC.xyz, ang ) + aRigA.xyz + o * aRigB.xyz;
 	return mix( p, q, w );
 }
 `;
@@ -409,8 +423,9 @@ const FEATHER_VERTEX_MAIN = /* glsl */ `
 	vKind = aMisc.z;
 	vec3 axis = aAxis;
 	// 可展翅：绕羽根旋转 + 平移到展开态的羽根（open = 0 时恒等；尾羽没有绑定信息、uOpen 为 0）
-	pos = wingSkinPoint( pos, nrm, axis );
-	nrm = wingSkinDir( nrm );
+	vec3 nOut;
+	pos = wingSkinPoint( pos, nrm, axis, nOut );
+	nrm = nOut;
 	// 几何原点就是羽根（尾基），直接绕局部 Y 轴转
 	float fan = -uSpread * aFan.x * ( 0.2 + 0.8 * aFan.y );
 	float fc = cos( fan );
@@ -439,23 +454,33 @@ varying float vKind;
 const FEATHER_SURFACE = /* glsl */ `
 	float edge = abs( vFrag.x );
 	float along = vFrag.y;
-	// 羽小枝：与羽轴成约 50° 的细纹；细节小于一个像素时淡出，避免摩尔纹
-	float phase = ( vPhy.y - 1.15 * abs( vPhy.x ) ) * 62.0;
+	// 羽小枝成束的斜纹（与羽轴成约 50°，约 2 mm 一束）：浅色羽上是柔和的明暗纹，深色羽（初级飞羽）上
+	// 是一根根略亮的发丝纹——放大后读得出羽翈的丝缕，不是一片光滑的叶子；细纹小于几个像素时淡出，避免摩尔纹
+	// 沿羽轴慢慢变化的噪声把丝纹打成一束束（间距微微忽宽忽窄、明暗成束），不是等距的灯芯绒
+	float bundle = snoise( vec3( vPhy.x * 30.0, vPhy.y * 7.0, vSize.x * 53.0 ) ) * 0.5 + 0.5;
+	float phase = ( vPhy.y - 1.15 * abs( vPhy.x ) ) * 34.0 + ( bundle - 0.5 ) * 4.0;
 	float fw = fwidth( phase );
 	float stripe = 0.5 + 0.5 * sin( phase * 6.2831853 );
-	float atten = 1.0 - smoothstep( 0.1, 0.35, fw );
+	float atten = ( 1.0 - smoothstep( 0.45, 1.0, fw ) ) * ( 0.45 + 0.55 * bundle );
 	float lum = dot( vCol, vec3( 0.3, 0.5, 0.2 ) );
-	vec3 alb = vCol * ( 1.0 + ( stripe - 0.5 ) * 0.16 * atten );
+	float dark = 1.0 - smoothstep( 0.05, 0.25, lum );
+	vec3 alb = vCol * ( 1.0 + ( stripe - 0.5 ) * 0.12 * atten );
+	alb += ( stripe - 0.5 ) * 0.02 * dark * atten;
 	alb *= mix( 0.6, 1.0, smoothstep( 0.0, 0.35, along ) );
 	// 羽小枝成束形成的纵向细纹；靠近后缘（被上一片压住的一侧）略暗
 	float streak = snoise( vec3( vPhy.x * 70.0, vPhy.y * 16.0, vSize.x * 53.0 ) ) * 0.5 + 0.5;
 	float sAtten = 1.0 - smoothstep( 0.15, 0.5, fwidth( vPhy.y * 16.0 ) );
 	alb *= 1.0 + ( streak - 0.5 ) * 0.12 * sAtten;
 	alb *= 1.0 - 0.12 * smoothstep( 0.55, 1.0, vFrag.x );
-	// 羽轴：一条细而有光泽的中线（初级飞羽的羽轴反而更深更清晰）
-	float rachis = exp( - pow( vPhy.x / 0.016, 2.0 ) ) * ( 1.0 - smoothstep( 0.85, 1.0, along ) );
+	// 羽轴：基部粗、往羽尖收细的一条中线（宽约 0.5 → 0.2 mm），两侧各带一线略亮的羽小枝根部，
+	// 远看是"一根轴 + 两片翈"。初级飞羽的羽轴是全翅最深最清晰的一道；细过一个像素时淡出，避免闪成虚线
+	float shaftW = mix( 0.03, 0.012, along );
+	float shaftAtten = 1.0 - smoothstep( 0.012, 0.03, fwidth( vPhy.x ) );
+	float rachis = exp( - pow( vPhy.x / shaftW, 2.0 ) ) * ( 1.0 - smoothstep( 0.85, 1.0, along ) ) * shaftAtten;
 	float primShaft = 1.0 - step( 0.5, vKind );
-	alb = mix( alb, mix( alb * 1.4 + 0.015, alb * 0.3, primShaft ), rachis * 0.7 );
+	float rim = exp( - pow( ( abs( vPhy.x ) - shaftW * 1.9 ) / ( shaftW * 0.6 ), 2.0 ) ) * ( 1.0 - smoothstep( 0.75, 1.0, along ) ) * shaftAtten;
+	alb *= 1.0 + rim * primShaft * 0.5 * ( 1.0 - rachis );
+	alb = mix( alb, mix( alb * 1.4 + 0.015, alb * 0.22, primShaft ), rachis * 0.8 );
 	// 正反面：翼下（腹面）是银灰白的珍珠质感，深色羽轴清晰可读；翼上按羽色函数。
 	// 几何法线两翅都朝背侧（左翅连法线一起镜像），但镜像会翻转绕序，gl_FrontFacing 左右相反，
 	// 所以用未被翻转的世界法线和视线点积判；尾羽两面色相同
@@ -497,13 +522,13 @@ const FEATHER_EXTRA_LIGHT = /* glsl */ `
 	float sinTH = sqrt( max( 1.0 - tdh * tdh, 0.0 ) );
 	float lum = dot( vCol, vec3( 0.3, 0.5, 0.2 ) );
 	float dark = 1.0 - smoothstep( 0.05, 0.25, lum );
-	float amt = mix( 0.02, 0.08, dark );
-	vec3 tint = mix( vec3( 1.0 ), vec3( 0.78, 0.84, 1.0 ), dark );
-	vec3 spec = uSunColor * pow( sinTH, 110.0 ) * amt * sunShadow() * tint;
+	float amt = mix( 0.02, 0.055, dark );
+	vec3 tint = mix( vec3( 1.0 ), vec3( 0.82, 0.86, 1.0 ), dark );
+	vec3 spec = uSunColor * pow( sinTH, 160.0 ) * amt * sunShadow() * tint;
 	// 逆光透射：太阳在羽片背面时，薄羽翈透出一层暖光（羽轴处厚、几乎不透），翼下不死黑
 	float back = max( dot( -V, uSunDir ), 0.0 );
-	float phase = ( vPhy.y - 1.15 * abs( vPhy.x ) ) * 62.0;
-	float rachisT = exp( - pow( vPhy.x / 0.016, 2.0 ) );
+	float phase = ( vPhy.y - 1.15 * abs( vPhy.x ) ) * 34.0;
+	float rachisT = exp( - pow( vPhy.x / mix( 0.03, 0.012, vFrag.y ), 2.0 ) );
 	vec3 trans = mix( s.albedo, vec3( 0.62, 0.52, 0.44 ), 0.4 );
 	vec3 glow = uSunColor * pow( back, 3.0 ) * uTrans * ( 1.0 - 0.85 * rachisT ) * trans * sunShadow();
 	return spec + glow;
@@ -539,7 +564,8 @@ ${WING_SKIN_PARS}
 attribute vec3 aAxis;
 void main() {
 	vec3 axis = aAxis;
-	vec3 pos = wingSkinPoint( position, normal, axis );
+	vec3 nOut;
+	vec3 pos = wingSkinPoint( position, normal, axis, nOut );
 	gl_Position = projectionMatrix * modelViewMatrix * vec4( pos, 1.0 );
 }
 `,

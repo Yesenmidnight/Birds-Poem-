@@ -55,7 +55,7 @@ const flight: FeatherColorFn = (across, along) => {
  * 羽轴在着色器里单独压深，翼下读得出一条条深色羽轴
  */
 const primary: FeatherColorFn = (across, along) => {
-  const base = mix(rgb('#403a3d'), rgb('#2c2729'), 0.35 + 0.65 * along);
+  const base = mix(rgb('#473c37'), rgb('#2c2422'), 0.35 + 0.65 * along);
   const fringe = smooth(0.94, 1.0, across) * 0.7 + smooth(0.985, 1.0, along) * 0.3;
   return mix(base, WHITE, clamp(fringe, 0, 1) * 0.18);
 };
@@ -841,8 +841,9 @@ varying vec3 vPanelP;
 	vPanelP = pos;
 	vFade = aDist * ( 1.0 - uOpen * smoothstep( 0.8, 1.3, -pos.z ) );
 	vec3 axis = aAxis;
-	pos = wingSkinPoint( pos, nrm, axis );
-	nrm = wingSkinDir( nrm );
+	vec3 nOut;
+	pos = wingSkinPoint( pos, nrm, axis, nOut );
+	nrm = nOut;
 `,
     fragmentPars: /* glsl */ `
 uniform vec3 uPanelCol;
