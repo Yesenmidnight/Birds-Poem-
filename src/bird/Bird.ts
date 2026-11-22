@@ -23,16 +23,18 @@ import {
   buildEyelid,
   buildLegs,
   buildMandible,
+  buildMouthCorners,
   buildNictitating,
   eyeFrame,
   makeBeakMaterial,
   makeEyeMaterial,
   makeLegMaterial,
   makeLidMaterial,
+  makeMouthMaterial,
   makeNictMaterial,
   type Perch,
 } from './parts';
-import { clamp, lerp } from '../util/math';
+import { clamp, lerp, smoothstep } from '../util/math';
 import { type BodyPose, type Pose } from './motion/Pose';
 
 export type BirdPart = 'fur' | 'feathers' | 'beak' | 'eyes' | 'legs';
@@ -100,6 +102,16 @@ export class Bird {
   private readonly headParts = new Group();
   private readonly jawUpper = new Group();
   private readonly jawLower = new Group();
+  private readonly beakBase = new Vector3();
+  /** 口腔两侧壁（口角）：顶点着色器按两张颌的角度在上下颌嘴缝边之间插值，挂在铰链上 */
+  private readonly mouth = new Group();
+  /** 和口腔侧壁 / 小舌材质共享的张嘴 uniform（同一个对象，setJawOpen 写一次全场同步） */
+  private readonly mouthJaw = new Vector2(0, 0);
+  private readonly tongueLift: IUniform = { value: 0 };
+  /** 下颌张嘴时沿喙轴前推的量（cm）：鸟张嘴时方骨把下颌往前送；这里主要让下颌根部离开下巴鼓包，别缩进肉里 */
+  private readonly jawPush: IUniform = { value: 0 };
+  private readonly jawAngle: IUniform = { value: 0 };
+  private readonly beakDir = new Vector3();
   private readonly eyes: EyeRig[] = [];
   private readonly wingPivots: Record<'left' | 'right', Group> = { left: new Group(), right: new Group() };
   /** 可展翅：羽片 / 底壳 / 阴影深度材质共用每只翅各自的一份 open uniform。 */
@@ -164,8 +176,13 @@ export class Bird {
 
     // ---------- 上下喙：绕嘴根铰链张合 ----------
     const beakBase = new Vector3(...params.beakBase);
-    const upper = new Mesh(buildMandible(params, true), makeBeakMaterial(lighting, params, true));
-    const lower = new Mesh(buildMandible(params, false), makeBeakMaterial(lighting, params, false));
+    const upperMat = makeBeakMaterial(lighting, params, true);
+    upperMat.uniforms.uJawOpen = this.jawAngle;
+    const upper = new Mesh(buildMandible(params, true), upperMat);
+    const lowerMat = makeBeakMaterial(lighting, params, false);
+    lowerMat.uniforms.uTongueLift = this.tongueLift;
+    lowerMat.uniforms.uJawOpen = this.jawAngle;
+    const lower = new Mesh(buildMandible(params, false), lowerMat);
     for (const [grp, mesh] of [
       [this.jawUpper, upper],
       [this.jawLower, lower],
@@ -176,7 +193,15 @@ export class Bird {
       grp.position.copy(beakBase);
       grp.add(mesh);
     }
-    this.headParts.add(this.jawUpper, this.jawLower);
+    // 口腔侧壁：几何在铰链坐标系里，所以组放在铰链上、网格不再平移；不投影（合拢时是零面积）
+    const mouthMat = makeMouthMaterial(lighting, params);
+    mouthMat.uniforms.uJaw = { value: this.mouthJaw };
+    mouthMat.uniforms.uPush = this.jawPush;
+    this.beakDir.set(...params.beakDir).normalize();
+    this.mouth.position.copy(beakBase);
+    this.mouth.add(new Mesh(buildMouthCorners(params), mouthMat));
+    this.beakBase.copy(beakBase);
+    this.headParts.add(this.jawUpper, this.jawLower, this.mouth);
 
     // ---------- 眼：眼球 + 上下眼睑壳 + 瞬膜，都在眼睛局部坐标系里 ----------
     const eyeMat = makeEyeMaterial(lighting);
@@ -213,8 +238,11 @@ export class Bird {
     this.parts = {
       fur: { objs: [this.fur.group], on: true },
       feathers: { objs: [this.wingPivots.right, this.wingPivots.left, this.tailPivot], on: true },
-      beak: { objs: [this.jawUpper, this.jawLower], on: true },
-      eyes: { objs: [...this.headParts.children.filter((c) => c !== this.jawUpper && c !== this.jawLower)], on: true },
+      beak: { objs: [this.jawUpper, this.jawLower, this.mouth], on: true },
+      eyes: {
+        objs: [...this.headParts.children.filter((c) => c !== this.jawUpper && c !== this.jawLower && c !== this.mouth)],
+        on: true,
+      },
       legs: { objs: [legs], on: true },
     };
     this.breathSpace.add(this.headParts, this.fur.group);
@@ -337,6 +365,13 @@ export class Bird {
     const a = Math.max(0, angle);
     this.jawLower.rotation.x = a;
     this.jawUpper.rotation.x = -0.25 * a;
+    // 口腔侧壁跟着两张颌插值；小舌在 0.08~0.2 rad 之间从嘴缝里鼓起来（合拢时平贴着，不会穿进上颌）
+    const push = 0.07 * Math.sin(a);
+    this.jawLower.position.copy(this.beakBase).addScaledVector(this.beakDir, push);
+    this.mouthJaw.set(a, -0.25 * a);
+    this.jawPush.value = push;
+    this.jawAngle.value = a;
+    this.tongueLift.value = smoothstep(0.08, 0.2, a);
   }
 
   /**

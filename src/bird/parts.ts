@@ -6,6 +6,7 @@ import {
   Matrix4,
   Quaternion,
   SphereGeometry,
+  Vector2,
   Vector3,
   type IUniform,
   type ShaderMaterial,
@@ -14,6 +15,16 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { makeLitMaterial, rgb, type LightingUniforms } from '../glsl/lit';
 import { TAU, clamp, lerp, smoothstep } from '../util/math';
 import type { BodyParams } from './bodySdf';
+import {
+  BEAK_DROOP,
+  BEAK_HINGE_DEPTH,
+  BEAK_NOTCH,
+  BEAK_PROFILE_GLSL,
+  BEAK_REF_LEN,
+  beakHalfWidth,
+  beakLowerHeight,
+  beakUpperHeight,
+} from './beakProfile';
 
 /**
  * 喙、眼、眼睑、瞬膜、腿脚。喙眼全部直接在鸟的局部坐标里生成；
@@ -27,29 +38,36 @@ const X_AXIS = new Vector3(1, 0, 0);
 
 /**
  * 上喙或下喙：尖巧的小三角锥放样——上喙脊带自然微下弯，截面是半椭圆，
- * 嘴缝处压出一道凹痕形成口角；嘴缝那一面用独立顶点封口，保留一条清晰的合缝线。
- * 两者都绕嘴根铰链张合（Bird.setJawOpen）。
+ * 嘴缝处压出一道凹痕形成口角；嘴缝那一面用独立顶点封口，是口腔的顶 / 底。
+ * 两者都绕铰链（params.beakBase，前脸皮层正下方）张合（Bird.setJawOpen）。
+ * 放样从铰链后方 BEAK_HINGE_DEPTH 的剖面原点起（埋在脸皮下的原始嘴根），铰链平面处没有开口的颌根环；
+ * 剖面按"距喙尖的距离"取（beakProfile），所以铰链位置怎么调，露在绒毛外的喙形都不变。
+ * 下颌带一枚小舌：顶点存实际高度 aTongue，着色器按张嘴度把它压平 / 立起。
  */
 export function buildMandible(p: BodyParams, upper: boolean): BufferGeometry {
   const rings = 18;
   const radial = 14;
-  const base = new Vector3(...p.beakBase);
+  const hinge = new Vector3(...p.beakBase);
   const dir = new Vector3(...p.beakDir).normalize();
   const up = new Vector3().crossVectors(dir, X_AXIS).normalize();
+  const L = p.beakLength;
+  const s0 = -BEAK_HINGE_DEPTH / L;
   // 上下喙的嘴缝面错开一点点，合拢时不共面
   const seamY = upper ? 0.002 : -0.002;
+  // 放样参数 s（铰链处 0、喙尖 1）→ 该圈截面中心和半宽 / 半高
+  const section = (s: number) => {
+    const dTip = (1 - s) * L;
+    const tRoot = BEAK_REF_LEN - dTip;
+    const c = hinge.clone().addScaledVector(dir, s * L).addScaledVector(up, (-BEAK_DROOP * tRoot * tRoot) / BEAK_REF_LEN);
+    return { c, w: beakHalfWidth(dTip), hu: beakUpperHeight(dTip), hl: beakLowerHeight(dTip) };
+  };
 
   const ringPoint = (i: number, j: number): [number, number, number] => {
-    const s = i / rings;
-    // 嘴短了，基部也相应收细一点，锥角和原来差不多（约 23°），仍是尖巧的小三角锥
-    const w = 0.168 * Math.pow(1 - s, 0.72) + 0.0035;
-    const hu = 0.15 * Math.pow(1 - s, 0.85) + 0.0035;
-    const hl = 0.088 * (1 - s) * (1 - s) + 0.0025;
-    const c = base.clone().addScaledVector(dir, s * p.beakLength).addScaledVector(up, -0.07 * s * s * p.beakLength);
+    const { c, w, hu, hl } = section(s0 + (i / rings) * (1 - s0));
     const th = upper ? (j / radial) * Math.PI : Math.PI + (j / radial) * Math.PI;
     const sy = Math.sin(th);
     const h = sy >= 0 ? hu : hl;
-    const gape = 1 - 0.11 * Math.exp(-((sy / 0.16) ** 2));
+    const gape = 1 - BEAK_NOTCH * Math.exp(-((sy / 0.16) ** 2));
     const x = w * Math.cos(th) * gape;
     const y = h * sy * gape + seamY;
     return [c.x + x, c.y + up.y * y, c.z + up.z * y];
@@ -57,12 +75,14 @@ export function buildMandible(p: BodyParams, upper: boolean): BufferGeometry {
 
   const pos: number[] = [];
   const seam: number[] = [];
+  const tongue: number[] = [];
   const idx: number[] = [];
   // 外壳：一节节半椭圆截面放样
   for (let i = 0; i <= rings; i++) {
     for (let j = 0; j <= radial; j++) {
       pos.push(...ringPoint(i, j));
       seam.push(0);
+      tongue.push(0);
       if (i < rings && j < radial) {
         const a = i * (radial + 1) + j;
         const b = a + 1;
@@ -77,23 +97,54 @@ export function buildMandible(p: BodyParams, upper: boolean): BufferGeometry {
   for (let i = 0; i <= rings; i++) {
     pos.push(...ringPoint(i, 0), ...ringPoint(i, radial));
     seam.push(1, 1);
+    tongue.push(0, 0);
     if (i < rings) {
       const a = seamBase + i * 2;
       idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
     }
   }
+  // 小舌（只有下颌）：贴在嘴缝面上的一枚扁勺，铰链前方 0.045 起长 0.125，最宽 0.034、最高 0.021
+  if (!upper) {
+    const NU = 10;
+    const NV = 8;
+    const tBase = pos.length / 3;
+    for (let i = 0; i <= NU; i++) {
+      const u = i / NU;
+      const d = 0.045 + u * 0.125;
+      const { c } = section(d / L);
+      const bell = Math.sin(Math.PI * u);
+      const hw = 0.034 * Math.pow(bell, 0.7) + 0.0015;
+      const hMax = 0.021 * Math.pow(bell, 0.8);
+      for (let j = 0; j <= NV; j++) {
+        const v = (j / NV) * 2 - 1;
+        const h = hMax * Math.pow(1 - v * v, 0.6);
+        const y = seamY + 0.0006 + h;
+        pos.push(c.x + v * hw, c.y + up.y * y, c.z + up.z * y);
+        seam.push(2);
+        tongue.push(h);
+      }
+    }
+    for (let i = 0; i < NU; i++) {
+      for (let j = 0; j < NV; j++) {
+        const a = tBase + i * (NV + 1) + j;
+        idx.push(a, a + 1, a + NV + 1, a + 1, a + NV + 2, a + NV + 1);
+      }
+    }
+  }
   const g = new BufferGeometry();
   g.setAttribute('position', new Float32BufferAttribute(pos, 3));
   g.setAttribute('aSeam', new Float32BufferAttribute(seam, 1));
+  g.setAttribute('aTongue', new Float32BufferAttribute(tongue, 1));
   g.setIndex(idx);
   g.computeVertexNormals();
   return g;
 }
 
 /**
- * 喙壳材质。嘴根一段垫成绒羽色：四周的细短白绒搭在喙根上，壳面是半透明的毛丝，
- * 底下若是黑的，毛缝里就会透出黑底、看着像一圈锯齿；垫成白色后毛丝和底色融为一体，
- * 黑喙像是从白绒里长出来的。嘴缝面永远是暗的，张嘴时口腔里不会发白。
+ * 喙壳 + 口腔内壁材质。嘴根垫色只垫在脸皮层底下那一段（铰链前方 0.04 以内）的 outer 面：
+ * 四周的细短白绒是半透明毛丝，搭在上面的壳面若是黑的，毛缝里会透出黑底、看着像一圈锯齿。
+ * 嘴缝面是口腔的顶 / 底：颌根深暗、往前渐亮成暖珊瑚粉棕，小舌更粉嫩；合拢时严丝合缝藏在上下颌之间。
+ * vObj 是铰链坐标系的（position 是鸟局部坐标，原来漏减 beakBase，along 恒 ≥ 1.5，垫色从未生效过）。
  */
 export function makeBeakMaterial(lighting: LightingUniforms, p: BodyParams, upper: boolean): ShaderMaterial {
   const dir = new Vector3(...p.beakDir).normalize();
@@ -106,7 +157,13 @@ export function makeBeakMaterial(lighting: LightingUniforms, p: BodyParams, uppe
       uBaseCol: { value: rgb('#e6e1d8') },
       uBeakDir: { value: dir },
       uBeakUp: { value: up },
+      uBeakBase: { value: new Vector3(...p.beakBase) },
+      uBeakLen: { value: p.beakLength },
       uBeakSide: { value: upper ? 1 : -1 },
+      // 小舌鼓起的比例：合拢时 0（平贴在嘴缝里），张嘴后到 1
+      uTongueLift: { value: 0 },
+      // 下颌张角：合拢时嘴缝面 / 小舌是深色缝，张开 0.02~0.1 rad 内才变成口腔色
+      uJawOpen: { value: 0 },
     },
     fragmentPars: /* glsl */ `
 uniform vec3 uBeakCol;
@@ -114,33 +171,53 @@ uniform vec3 uBaseCol;
 uniform vec3 uBeakDir;
 uniform vec3 uBeakUp;
 uniform float uBeakSide;
+uniform float uBeakLen;
+uniform float uJawOpen;
 varying vec3 vObj;
 varying float vSeam;
-`,
+varying float vTongue;
+${BEAK_PROFILE_GLSL}`,
     vertexPars: /* glsl */ `
 attribute float aSeam;
+attribute float aTongue;
+uniform vec3 uBeakBase;
+uniform vec3 uBeakUp;
+uniform float uTongueLift;
 varying vec3 vObj;
 varying float vSeam;
+varying float vTongue;
 `,
     vertexMain: /* glsl */ `
-	vObj = position;
+	vObj = position - uBeakBase;
 	vSeam = aSeam;
+	vTongue = aTongue;
+	pos -= uBeakUp * aTongue * ( 1.0 - uTongueLift );
 `,
     surface: /* glsl */ `
 	float along = dot( vObj, uBeakDir );
 	float grain = snoise( vObj * 120.0 ) * 0.5 + 0.5;
-	float base = 1.0 - smoothstep( 0.1, 0.2, along + ( snoise( vObj * 60.0 ) - 0.5 ) * 0.05 );
+	float base = 1.0 - smoothstep( 0.0, 0.04, along + ( snoise( vObj * 60.0 ) - 0.5 ) * 0.02 );
 	// 绒羽色只垫在嘴根朝外的那一面（上颌的上侧、下颌的下侧，也就是合拢时被毛搭住的地方）；
-	// 嘴缝面和靠近嘴缝的内侧永远是暗的：合缝是一条线，张嘴时口腔里也不发白
-	base *= ( 1.0 - vSeam ) * smoothstep( 0.06, 0.12, uBeakSide * dot( vObj, uBeakUp ) );
+	// 嘴缝面和靠近嘴缝的内侧永远是口腔色 / 暗的
+	base *= ( 1.0 - step( 0.5, vSeam ) ) * smoothstep( 0.06, 0.12, uBeakSide * dot( vObj, uBeakUp ) );
+	float mouth = step( 0.5, vSeam );
+	float tongue = step( 1.5, vSeam );
+	float t = clamp( along / uBeakLen, 0.0, 1.0 );
+	vec3 mouthCol = mix( vec3( 0.16, 0.045, 0.04 ), vec3( 0.45, 0.14, 0.105 ), smoothstep( 0.0, 0.45, t ) );
+	mouthCol = mix( mouthCol, vec3( 0.62, 0.22, 0.17 ), tongue * 0.85 );
+	// 嘴缝边（tomium）是黑的：口腔色从缝边往里 0.015 才亮起来；合拢时整条缝是深色缝，张开后才是粉口腔
+	float rim = smoothstep( 0.0, 0.015, beakW( uBeakLen - along ) * ${(1 - BEAK_NOTCH).toFixed(4)} - abs( vObj.x ) );
+	mouthCol = mix( vec3( 0.02, 0.015, 0.015 ), mouthCol, rim * smoothstep( 0.02, 0.1, uJawOpen ) );
 	Surf s;
 	s.albedo = mix( uBeakCol * ( 0.8 + 0.4 * grain ), uBaseCol * ( 0.92 + 0.12 * grain ), base );
-	s.ao = 1.0;
-	s.wrap = mix( 0.3, 0.55, base );
+	s.albedo = mix( s.albedo, mouthCol, mouth );
+	s.ao = mix( 1.0, 0.55 + 0.45 * t, mouth );
+	s.wrap = mix( mix( 0.3, 0.55, base ), 0.7, mouth );
 	s.specTint = vec3( 1.0 );
-	s.gloss = mix( 0.62, 0.3, base );
-	// 嘴缝面是平的、朝上对着天光，高光要压掉，不然张嘴时口腔里会泛出一块灰白
-	s.specAmt = mix( 0.55 * ( 1.0 - 0.85 * vSeam ), 0.05, base );
+	s.gloss = mix( mix( 0.62, 0.3, base ), 0.5, mouth );
+	// 嘴缝面是平的，高光要压掉，不然张嘴时口腔里泛出一块灰白；小舌留一点湿润的高光
+	s.specAmt = mix( 0.55 * ( 1.0 - 0.85 * mouth ), 0.05, base );
+	s.specAmt = mix( s.specAmt, 0.08 + 0.2 * tongue, mouth );
 	s.alpha = 1.0;
 	return s;
 `,
@@ -149,6 +226,94 @@ varying float vSeam;
 	float dark = 1.0 - smoothstep( 0.05, 0.2, dot( s.albedo, vec3( 0.3, 0.5, 0.2 ) ) );
 	float rim = pow( 1.0 - clamp( dot( N, V ), 0.0, 1.0 ), 3.0 );
 	return uSkyColor * rim * 0.4 * dark;
+`,
+  });
+}
+
+/**
+ * 口腔两侧壁（口角）：连接上下颌嘴缝边的条带。合拢时上下缘重合是零面积；
+ * 张开时顶点着色器把下缘跟下颌转（含下颌前推 uPush）、上缘跟上颌转、中间线性插值。
+ * 只做口角那一段（铰链到 80% 喙长）：喙尖那一段上下颌的嘴缝边之间是张开的口，不是一面粉墙；也不需要靠剃秃体表网格来充当口腔。几何在铰链坐标系里（原点 = 铰链）。
+ */
+export function buildMouthCorners(p: BodyParams): BufferGeometry {
+  const N = 10;
+  const dir = new Vector3(...p.beakDir).normalize();
+  const up = new Vector3().crossVectors(dir, X_AXIS).normalize();
+  const L = p.beakLength;
+  const pos: number[] = [];
+  const blend: number[] = [];
+  const side: number[] = [];
+  const along: number[] = [];
+  const idx: number[] = [];
+  for (const sd of [1, -1]) {
+    const b0 = pos.length / 3;
+    for (let i = 0; i <= N; i++) {
+      // 口角 flesh 从铰链伸到 80% 喙长：再往前只剩喙尖那一点缝，从侧面看进去是口腔内部而不是透空
+      const s = (i / N) * 0.8;
+      const tRoot = BEAK_REF_LEN - (1 - s) * L;
+      const w = beakHalfWidth((1 - s) * L) * (1 - BEAK_NOTCH);
+      const droop = (-BEAK_DROOP * tRoot * tRoot) / BEAK_REF_LEN;
+      const y = dir.y * s * L + up.y * droop;
+      const z = dir.z * s * L + up.z * droop;
+      for (const bl of [0, 1]) {
+        pos.push(sd * w, y, z);
+        blend.push(bl);
+        side.push(sd);
+        along.push(s);
+      }
+    }
+    for (let i = 0; i < N; i++) {
+      const a = b0 + i * 2;
+      idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+    }
+  }
+  const g = new BufferGeometry();
+  g.setAttribute('position', new Float32BufferAttribute(pos, 3));
+  g.setAttribute('aBlend', new Float32BufferAttribute(blend, 1));
+  g.setAttribute('aSide', new Float32BufferAttribute(side, 1));
+  g.setAttribute('aT', new Float32BufferAttribute(along, 1));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
+/** 口腔侧壁材质：暖珊瑚粉棕，颌根更深。uJaw = (下颌角, 上颌角)，由 Bird.setJawOpen 写入。 */
+export function makeMouthMaterial(lighting: LightingUniforms, p: BodyParams): ShaderMaterial {
+  const dir = new Vector3(...p.beakDir).normalize();
+  return makeLitMaterial({
+    lighting,
+    side: DoubleSide,
+    uniforms: { uJaw: { value: new Vector2(0, 0) }, uPush: { value: 0 }, uBeakDir: { value: dir } },
+    vertexPars: /* glsl */ `
+attribute float aBlend;
+attribute float aSide;
+attribute float aT;
+uniform vec2 uJaw;
+uniform float uPush;
+uniform vec3 uBeakDir;
+varying float vT;
+`,
+    vertexMain: /* glsl */ `
+	float cl = cos( uJaw.x ), sl = sin( uJaw.x ), cu = cos( uJaw.y ), su = sin( uJaw.y );
+	vec3 pl = vec3( position.x, position.y * cl - position.z * sl, position.y * sl + position.z * cl ) + uBeakDir * uPush;
+	vec3 pu = vec3( position.x, position.y * cu - position.z * su, position.y * su + position.z * cu );
+	pos = mix( pl, pu, aBlend );
+	nrm = vec3( aSide, 0.0, 0.0 );
+	vT = aT;
+`,
+    fragmentPars: /* glsl */ `
+varying float vT;
+`,
+    surface: /* glsl */ `
+	Surf s;
+	s.albedo = mix( vec3( 0.16, 0.045, 0.04 ), vec3( 0.42, 0.13, 0.10 ), smoothstep( 0.0, 0.5, vT ) );
+	s.ao = 0.7;
+	s.wrap = 0.7;
+	s.specTint = vec3( 1.0 );
+	s.gloss = 0.5;
+	s.specAmt = 0.12;
+	s.alpha = 1.0;
+	return s;
 `,
   });
 }

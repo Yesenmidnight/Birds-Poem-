@@ -6,18 +6,23 @@
  * 口腔、口角的位置从 bodySdf 的 params（嘴根、喙轴）派生，头部移动时自动跟随，不留旧常数。
  */
 import { LONG_TAILED_TIT } from './bodySdf';
+import { BEAK_DROOP, BEAK_HINGE_DEPTH, BEAK_NOTCH, BEAK_PROFILE_GLSL, BEAK_REF_LEN } from './beakProfile';
 
-const { beakBase, beakDir, head } = LONG_TAILED_TIT;
+const { beakBase, beakDir, beakLength, head } = LONG_TAILED_TIT;
 const bl = Math.hypot(beakDir[0], beakDir[1], beakDir[2]);
 // 喙轴在 yz 平面里的方向，和垂直于它的"上"方向
 const dy = beakDir[1] / bl;
 const dz = beakDir[2] / bl;
 const uy = dz;
 const uz = -dy;
+// 剖面原点 = 铰链沿喙轴后退 BEAK_HINGE_DEPTH（原来 M1 的嘴根）：口角线从它量起，铰链前移不影响口角位置
+const ox = beakBase[0] - (beakDir[0] / bl) * BEAK_HINGE_DEPTH;
+const oy = beakBase[1] - dy * BEAK_HINGE_DEPTH;
+const oz = beakBase[2] - dz * BEAK_HINGE_DEPTH;
 const f = (v: number): string => v.toFixed(4);
-/** 口角线两端：相对嘴根的偏移与 body.ts 的 GAPE_A / GAPE_B 完全一致 */
-const GAPE_A = [beakBase[0] + 0.15, beakBase[1] - 0.01, beakBase[2] + 0.105];
-const GAPE_B = [beakBase[0] + 0.31, beakBase[1] - 0.09, beakBase[2] + 0.04];
+/** 口角线两端：相对剖面原点的偏移与 body.ts 的 GAPE_A / GAPE_B 完全一致 */
+const GAPE_A = [ox + 0.15, oy - 0.01, oz + 0.105];
+const GAPE_B = [ox + 0.31, oy - 0.09, oz + 0.04];
 
 /** sRGB 十六进制 → 线性色：只在这里用、不值得再开一个 uniform 的颜色。 */
 const lin = (hex: string): [number, number, number] => {
@@ -39,6 +44,8 @@ uniform vec3 uColBlack;
 uniform vec3 uColCrown;
 uniform vec3 uColSkin;
 const vec3 SADDLE = vec3( ${f(SADDLE[0])}, ${f(SADDLE[1])}, ${f(SADDLE[2])} );
+// 合拢颌壳的剖面（和 parts.ts 放样、body.ts 压毛同一组公式），参数是距喙尖的距离
+${BEAK_PROFILE_GLSL}
 
 // boneW = 头颈两根骨骼的权重和（fur.ts 顶点着色器传进来）：大于 0.05 的皮肤跟着头转，只能是白毛
 vec3 plumage( vec3 p, vec3 n, float eyeD, float boneW ) {
@@ -99,25 +106,23 @@ vec3 plumage( vec3 p, vec3 n, float eyeD, float boneW ) {
 	// 眼睑壳底下的体表是深色皮肤（露出来的只有眼圈以内，其余都被眼睑盖住）
 	col = mix( col, uColSkin, 1.0 - smoothstep( 0.105, 0.15, eyeD ) );
 
-	// 口腔：张嘴时从上下颌之间露出来的体表是深暗的口腔色（body.ts 已把这里的毛压到零）。
-	// 范围严格收在合拢时被上下颌盖住的颌根截面之内（半宽 0.10、上 0.09、下 -0.02，往外 0.03 渐隐）：
-	// 合拢时颌根四周露出的那一圈皮肤仍是浅色，张嘴时颌根之间露出来的才是暗的口腔。
-	// 头的前脸比嘴根还鼓出约 0.1 cm，所以沿喙轴的上限之外，下限只到颌根稍后（-0.22~-0.08）：
-	// 不设下限这道圆柱会穿过脑壳从后枕钻出来，在背上剃出一块黑秃坑。
-	// 坐标系沿喙轴：bUp 垂直于喙轴向上，bAl 沿喙轴向前，原点在嘴根（都从 params 派生）
-	float bUp = ( p.y - ${f(beakBase[1])} ) * ${f(uy)} + ( p.z - ${f(beakBase[2])} ) * ${f(uz)};
+	// 口腔：口腔本体（嘴缝面、两侧壁、小舌）做在喙模型里（parts.ts），体表只需要负责张嘴时从上下颌之间
+	// 露出来的那一丝——铰链正前方、合拢颌壳截面以内的体表是深暗的口腔色，body.ts 在这里留 0.2 的短绒。
+	// 范围严格按合拢颌壳的真实剖面（和 body.ts 的压毛同一组公式）：合拢时全被上下颌盖住，嘴根两侧不露口腔色。
+	// 坐标系：原点在铰链，bAl 沿喙轴向前，bUp 相对截面中心向上（喙脊下弯要把中心压低）
 	float bAl = ( p.y - ${f(beakBase[1])} ) * ${f(dy)} + ( p.z - ${f(beakBase[2])} ) * ${f(dz)};
-	// 截面严格落在上下颌壳轮廓以内（和 body.ts 的压毛范围一致），合拢时嘴根两侧不露口腔色
-	float mouth =
-		( 1.0 - smoothstep( 0.08, 0.11, abs( p.x ) ) ) *
-		( 1.0 - smoothstep( 0.07, 0.095, bUp ) ) *
-		smoothstep( -0.03, -0.01, bUp ) *
-		( 1.0 - smoothstep( 0.12, 0.17, bAl ) ) *
-		smoothstep( -0.22, -0.08, bAl );
-	// 颌根铰链后方那一小截合拢时露不出来、却盖不住的体表仍是深色皮肤（和嘴角阴影一致，不会在嘴根两侧漏红）；
+	float dTip = ${f(beakLength)} - bAl;
+	float tRoot = ${f(BEAK_REF_LEN)} - dTip;
+	float bUp = ( p.y - ${f(beakBase[1])} ) * ${f(uy)} + ( p.z - ${f(beakBase[2])} ) * ${f(uz)} + ${f(BEAK_DROOP)} * tRoot * tRoot / ${f(BEAK_REF_LEN)};
+	float wB = beakW( dTip );
+	float hB = bUp > 0.0 ? beakHu( dTip ) : beakHl( dTip );
+	float rB0 = length( vec2( p.x / wB, bUp / hB ) );
+	float notch = 1.0 - ${f(BEAK_NOTCH)} * exp( - pow( bUp / hB / max( rB0, 1e-4 ) / 0.16, 2.0 ) );
+	float mouth = ( 1.0 - smoothstep( 0.78, 0.9, rB0 / notch ) ) * smoothstep( -0.06, -0.02, bAl ) * ( 1.0 - smoothstep( 0.2, 0.26, bAl ) );
+	// 铰链后方那一小截合拢时露不出来、却盖不住的体表仍是深色皮肤（和嘴角阴影一致）；
 	// 只有上下颌之间真正露出来的口腔内部才是暖珊瑚粉棕（线性色，在颌壳阴影里也读得出暖调）
 	col = mix( col, uColSkin * 0.5, mouth );
-	col = mix( col, vec3( 0.45, 0.14, 0.105 ), mouth * smoothstep( -0.04, 0.04, bAl ) );
+	col = mix( col, vec3( 0.45, 0.14, 0.105 ), mouth * smoothstep( -0.02, 0.02, bAl ) );
 
 	// 口角：从嘴角向后下方延伸进绒毛里的一道细微暗线
 	vec3 ga = vec3( ${f(GAPE_A[0])}, ${f(GAPE_A[1])}, ${f(GAPE_A[2])} );

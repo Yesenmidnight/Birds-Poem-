@@ -57,10 +57,12 @@ export const LONG_TAILED_TIT: BodyParams = {
   eyeRadius: 0.24,
   eyeOffset: 0.622,
   eyePatch: 0.21,
-  // 嘴根在头球前下方，相对头部椭球中心的偏移 (0, -0.06, 0.72) 不变
-  beakBase: [0, 3.36, 1.52],
+  // 喙：beakBase 是上下颌的张合铰链，放在前脸皮层正下方（喙轴出肉点后 0.025）——铰链埋在脸深处时，
+  // 下颌一转就整片缩回下巴肉里。放样剖面的原点在铰链后方 beakProfile.BEAK_HINGE_DEPTH 处（原来 M1 的嘴根，
+  // 相对头部椭球中心的偏移 (0, -0.06, 0.72)），露在绒毛外的喙长、喙形和 M1 定稿逐点一致。
+  beakBase: [0, 3.3471, 1.6494],
   beakDir: v(0, -0.1, 1),
-  beakLength: 0.39,
+  beakLength: 0.26,
   tailBase: [0, 2.13, -3.15],
   tailDir: v(0, -0.22, -0.975),
   bounds: { min: [-1.45, 0.05, -3.9], max: [1.45, 4.5, 1.8] },

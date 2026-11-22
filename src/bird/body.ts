@@ -9,6 +9,7 @@ import {
 } from './bodySdf';
 import { surfaceNets } from './surfaceNets';
 import { wingCoverField, wingPlacements } from './wingTail';
+import { BEAK_DROOP, BEAK_HINGE_DEPTH, BEAK_NOTCH, BEAK_REF_LEN, beakHalfWidth, beakLowerHeight, beakUpperHeight } from './beakProfile';
 import { clamp, lerp, smoothstep } from '../util/math';
 
 /**
@@ -45,9 +46,24 @@ export function buildBody(params: BodyParams = LONG_TAILED_TIT, cell = 0.055): B
   const count = net.positions.length / 3;
   // 翼下压毛的覆盖范围：收拢翅羽片的真实投影（随机种子和 Bird 建翅用的一致）
   const wingCover = wingCoverField(wingPlacements(params));
-  // 口角暗线：从嘴角出发向后下方伸进绒毛里的那一小段（右半身，左半身镜像），相对嘴根定位，头移动时跟着走
-  const GAPE_A: [number, number, number] = [params.beakBase[0] + 0.15, params.beakBase[1] - 0.01, params.beakBase[2] + 0.105];
-  const GAPE_B: [number, number, number] = [params.beakBase[0] + 0.31, params.beakBase[1] - 0.09, params.beakBase[2] + 0.04];
+  // 喙：铰链（params.beakBase，前脸皮层正下方）、喙轴、喙的"上方"，以及剖面原点 = 铰链沿喙轴后退 BEAK_HINGE_DEPTH
+  // （原来 M1 的嘴根，埋在脸皮下）。头部的毛流从原点向后倒、口角线从原点量起、嘴根附近的毛长按到原点的距离算：
+  // 这三样跟着原点走，铰链前移不会改变脸部绒毛的样子
+  const [bx, by, bz] = params.beakBase;
+  const bl = Math.hypot(...params.beakDir);
+  const bdx = params.beakDir[0] / bl;
+  const bdy = params.beakDir[1] / bl;
+  const bdz = params.beakDir[2] / bl;
+  // 喙的"上方"：喙轴（在 yz 平面里）与 x 轴的叉积
+  const upl = Math.hypot(bdz, bdy);
+  const upy = bdz / upl;
+  const upz = -bdy / upl;
+  const ox = bx - bdx * BEAK_HINGE_DEPTH;
+  const oy = by - bdy * BEAK_HINGE_DEPTH;
+  const oz = bz - bdz * BEAK_HINGE_DEPTH;
+  // 口角暗线：从嘴角出发向后下方伸进绒毛里的那一小段（右半身，左半身镜像），相对剖面原点定位，头移动时跟着走
+  const GAPE_A: [number, number, number] = [ox + 0.15, oy - 0.01, oz + 0.105];
+  const GAPE_B: [number, number, number] = [ox + 0.31, oy - 0.09, oz + 0.04];
   const GAPE_D = [GAPE_B[0] - GAPE_A[0], GAPE_B[1] - GAPE_A[1], GAPE_B[2] - GAPE_A[2]];
   const GAPE_LEN2 = GAPE_D[0] ** 2 + GAPE_D[1] ** 2 + GAPE_D[2] ** 2;
 
@@ -59,14 +75,6 @@ export function buildBody(params: BodyParams = LONG_TAILED_TIT, cell = 0.055): B
   const press = new Float32Array(count);
 
   const g = [0, 0, 0];
-  const [bx, by, bz] = params.beakBase;
-  const bl = Math.hypot(...params.beakDir);
-  const bdy = params.beakDir[1] / bl;
-  const bdz = params.beakDir[2] / bl;
-  // 喙的“上方”：喙轴（在 yz 平面里）与 x 轴的叉积
-  const upl = Math.hypot(bdz, bdy);
-  const upy = bdz / upl;
-  const upz = -bdy / upl;
 
   for (let i = 0; i < count; i++) {
     const x = net.positions[i * 3];
@@ -99,9 +107,9 @@ export function buildBody(params: BodyParams = LONG_TAILED_TIT, cell = 0.055): B
     region.set([wHead, wChest, wBelly, wBack], i * 4);
 
     // ---- 毛流：头上的羽毛从喙根向后倒，身上的向后向下顺 ----
-    let fx = x - bx;
-    let fy = y - by;
-    let fz = z - bz;
+    let fx = x - ox;
+    let fy = y - oy;
+    let fz = z - oz;
     let dot = fx * nx + fy * ny + fz * nz;
     fx -= nx * dot;
     fy -= ny * dot;
@@ -176,27 +184,29 @@ export function buildBody(params: BodyParams = LONG_TAILED_TIT, cell = 0.055): B
     const brow = smoothstep(-0.06 * er, 0.44 * er, y - eyeCy);
     const lidR = er * (0.55 - 0.05 * brow);
     furLen *= 1 - 0.95 * (1 - smoothstep(lidR, lidR + er * 0.45, eyeD));
-    // 嘴根附近绒毛略短；喙壳底下的体表彻底压住，毛尖不会从黑喙里钻出来
-    const beakD = Math.hypot(x - bx, y - by, z - bz);
-    furLen *= 0.55 + 0.45 * smoothstep(0.15, 0.45, beakD);
-    const bUp = (y - by) * upy + (z - bz) * upz;
-    // 沿喙轴的坐标：原点在嘴根，向前为正。喙底的压毛和口腔都必须有沿喙轴的下限——这两条圆柱如果只设上限，
-    // 就会沿着喙轴一路向后穿过脑壳，从后枕下方的背上钻出来，在鞍背正中剃出一块黑秃坑
+    // 嘴根压毛严格按合拢颌壳的真实剖面（beakProfile，和 parts.ts 的放样同一组公式；坐标原点在铰链）：
+    // edge = 到颌壳边缘的近似距离（负 = 壳内）。原来按 0.15~0.18 的固定椭圆剃秃，比出肉处 0.11 的喙壳大一圈，
+    // 黑喙四周露出一圈棱角分明的体素白边。现在：
+    //   壳内深处留 0.2 的短绒（张嘴时颌根之间露出的那一丝体表是带绒的口腔底，不是光板多边形）；
+    //   紧贴壳边 0.08 内压到底——毛沿法线往外长，壳边附近的毛再短也会穿出黑喙侧面，在下颌上洒一层白点；
+    //   壳边以外 0.02 内升到 0.45 的细短白绒搭在喙根上，再往外按到剖面原点的距离 beakD 放长。
+    // 口腔本体做在喙模型里（parts.ts 的嘴缝面 + 口腔侧壁 + 小舌），不再靠剃秃体表网格来充当
     const bAl = (y - by) * bdy + (z - bz) * bdz;
-    // 喙壳底下的体表压毛：只在嘴根及其前方（下限 -0.18~-0.05），嘴根后方的脸照常长毛，嘴根不剃秃
-    const beakRoot = smoothstep(-0.18, -0.05, bAl);
-    furLen *= 1 - (1 - smoothstep(0.95, 1.2, Math.hypot(x / 0.15, (bUp - 0.03) / 0.12))) * beakRoot;
-    // 口腔：张嘴时从上下颌之间露出来的体表（颌根截面以内，含嘴根前方鼓出来的那一段）不长毛，着色器再把它染成口腔色。
-    // 范围与 plumage.ts 的口腔色一致：合拢时这一块全被上下颌盖住；沿喙轴只到颌根稍后（下限 -0.22~-0.08）
-    // 截面必须严格落在上下颌壳的轮廓以内（颌壳基部半宽 0.168、上高 0.15、下高 0.088，往前收细），
-    // 稍大一点合拢时嘴根两侧就会露出一线口腔色
-    const mouth =
-      (1 - smoothstep(0.08, 0.11, Math.abs(x))) *
-      (1 - smoothstep(0.07, 0.095, bUp)) *
-      smoothstep(-0.03, -0.01, bUp) *
-      (1 - smoothstep(0.12, 0.17, bAl)) *
-      smoothstep(-0.22, -0.08, bAl);
-    furLen *= 1 - mouth;
+    const dTip = (1 - bAl / params.beakLength) * params.beakLength;
+    // 喙脊下弯把截面中心压低，bUp 要相对截面中心量
+    const tRoot = BEAK_REF_LEN - dTip;
+    const bUp = (y - by) * upy + (z - bz) * upz + (BEAK_DROOP * tRoot * tRoot) / BEAK_REF_LEN;
+    const wB = beakHalfWidth(dTip);
+    const hB = bUp > 0 ? beakUpperHeight(dTip) : beakLowerHeight(dTip);
+    // 口角凹痕：嘴缝那一圈壳往里收 BEAK_NOTCH
+    const rB0 = Math.hypot(x / wB, bUp / hB);
+    const notch = 1 - BEAK_NOTCH * Math.exp(-((bUp / hB / (rB0 > 1e-6 ? rB0 : 1) / 0.16) ** 2));
+    const edge = (rB0 / notch - 1) * Math.min(wB, hB);
+    const beakD = Math.hypot(x - ox, y - oy, z - oz);
+    // 颌壳只存在于剖面原点前方：原点后方（脸深处）不压
+    const shellIn =
+      0.2 * (1 - smoothstep(-0.08, -0.02, edge)) * smoothstep(-BEAK_HINGE_DEPTH - 0.01, -BEAK_HINGE_DEPTH + 0.04, bAl);
+    furLen *= lerp(shellIn, 0.45 + 0.55 * smoothstep(0.2, 0.5, beakD), smoothstep(0, 0.02, edge));
     // 口角线上的毛略短，嘴角向后延伸的暗线才读得出来
     {
       const gx = Math.abs(x) - GAPE_A[0];
