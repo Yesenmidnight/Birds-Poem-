@@ -193,13 +193,20 @@ export function buildBody(params: BodyParams = LONG_TAILED_TIT, cell = 0.055): B
     furLen *= 0.7 + 0.3 * smoothstep(0.35, 0.7, y);
 
     // ---- 骨骼权重：头、颈两根骨骼，其余归身体 ----
-    // 头部（眼眶、前脸、嘴根、头顶）必须 100% 跟头骨刚体走：刚体的眼球和上下喙是整组跟 mHead 转的，
-    // 体表若只跟一半，大角度转头时眼球就会滑出眼窝、露出一块深色皮肤。
-    // 所以按高度划分而不是按离头心的距离（smin 之后前脸的 dh 反而比脖子大，按 dh 分会把前脸判成脖子）：
-    // y ≥ 3.2 全是头骨，线性混合过渡区压在脖子 y≈2.75~3.2，再往下归颈骨、身体
-    const tHead = smoothstep(2.75, 3.2, y);
-    const wHeadBone = tHead;
-    const wNeckBone = (1 - tHead) * smoothstep(2.25, 2.75, y);
+    // 按三维部位划分，不能只按高度切：back 椭球顶部高到 y=3.63，只看 y 会把整个上背和双肩判成头骨，
+    // 头一转后背就绕前胸的枢轴甩出去、和留在原地的翅膀劈叉（转头归零的静态图看不出来）。
+    // 1) 头部椭球在六颗椭球 softmax 里占的份额（温度放宽到 0.3，颈圈过渡带才有足够宽度）：
+    //    前脸、眼周睑裂、喙根、脸颊、头顶、后枕的份额都 ≥ 0.4，饱和之后严格是 1.0，
+    //    刚体的眼球和上下喙整组跟头骨转，大角度转头也不会滑出眼窝露黑边；份额跌到 0.15 以下是躯干。
+    // 2) 颈圈过渡带（份额 0.15~0.42）里颈骨只分担一部分：份额 0.1 以下完全归躯干，上背、双肩、翼根
+    //    （份额 ≈ 0.02~0.06）和下胸腹部都是 0，转头时一丝都不动。
+    // 3) 后背再加一道 z 门限：z < -0.3 的背部、臀部全部归躯干，只在后枕 z ≈ -0.3~-0.12 之间渐变。
+    const sk = nd.map((d) => Math.exp(-(d - best) / 0.3));
+    const skSum = sk[0] + sk[1] + sk[2] + sk[3] + sk[4] + sk[5];
+    const headShare = sk[0] / skSum;
+    const backGate = smoothstep(-0.3, -0.12, z);
+    const wHeadBone = smoothstep(0.15, 0.42, headShare) * backGate;
+    const wNeckBone = (1 - wHeadBone) * smoothstep(0.1, 0.33, headShare) * backGate;
     weights.set([wNeckBone, wHeadBone], i * 2);
 
     // aParam：毛长系数、逐顶点随机数、离眼中轴线的距离（着色器据此画眼睑里的深色皮肤）
