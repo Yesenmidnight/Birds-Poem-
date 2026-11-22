@@ -15,7 +15,7 @@ import { LONG_TAILED_TIT, type BodyParams } from './bodySdf';
 import { buildBody } from './body';
 import { FUR_DEFAULTS, Fur, makeFurArmDepth, type FurSettings } from './fur';
 import { makeFeatherMaterial, makeWingDepthMaterial, type WingRigUniforms } from './feathers';
-import { WING_PIVOT, WingRig, buildTail, buildWing, buildWingArm, buildWingPanel, makeWingPanelMaterial, wingArmInward, wingArmSpan, wingDorsalN } from './wingTail';
+import { WING_PIVOT, WingRig, buildTail, buildWing, buildWingArm, buildWingPanel, makeWingPanelMaterial, wingArmInward, wingArmSpan } from './wingTail';
 import {
   LID_GAP_LOWER,
   LID_GAP_UPPER,
@@ -163,7 +163,7 @@ export class Bird {
       const rig = this.wingRigs[side];
       const wing = buildWing(params, 5, s);
       featherCount += wing.count;
-      const mesh = new Mesh(wing.geometry, makeFeatherMaterial(lighting, rig.uniforms, s, wingDorsalN(s)));
+      const mesh = new Mesh(wing.geometry, makeFeatherMaterial(lighting, rig.uniforms));
       mesh.castShadow = true;
       mesh.receiveShadow = true;
       // 阴影用的深度材质走同一套顶点变形，展开的翅投出去的影子才是展开的

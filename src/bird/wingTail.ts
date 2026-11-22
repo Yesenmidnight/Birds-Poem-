@@ -422,13 +422,8 @@ const cosS = Math.cos(WING_SWEEP);
 const SPAN_U = new Vector3(cosD * cosS, Math.sin(WING_DIHEDRAL), -cosD * sinS);
 /** 弦向（向前） */
 const CHORD_V = new Vector3(sinS, 0, cosS);
-/** 翼平面背侧法线（羽片材质按它判正反面，不按会随羽尖弧度翻号的羽面法线） */
+/** 翼平面背侧法线（底壳肩段展开旋转和翼臂垫折拢绑定的目标标架用；羽片材质的正反面不靠它，见 feathers.ts） */
 export const DORSAL_N = new Vector3().crossVectors(CHORD_V, SPAN_U);
-
-/** 满展态翼平面的背侧法线（枢轴坐标，按左右翅镜像）：羽片材质按它判正反面。 */
-export function wingDorsalN(side: 1 | -1): Vector3 {
-  return DORSAL_N.clone().multiply(new Vector3(side, 1, 1));
-}
 
 /** 翼臂绒毛垫配色用的翼展方向（枢轴坐标，按左右翅镜像）。 */
 export function wingArmSpan(side: 1 | -1): Vector3 {

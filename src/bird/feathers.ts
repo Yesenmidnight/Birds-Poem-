@@ -412,11 +412,6 @@ varying float vSoft;
 varying vec3 vAxisW;
 varying float vExp;
 varying float vKind;
-// 正反面按翼平面判：收拢态翼面朝外（±x），满展态朝翼平面背侧（wingTail.ts 的 DORSAL_N，左右翅各自镜像），
-// 按当前 uOpen 混合后转到世界空间（随翅枢轴的扑翼 / 扫转一起转）
-uniform vec3 uDorsalFold;
-uniform vec3 uDorsalOpen;
-varying vec3 vDorsalW;
 `;
 
 const FEATHER_VERTEX_MAIN = /* glsl */ `
@@ -440,7 +435,6 @@ const FEATHER_VERTEX_MAIN = /* glsl */ `
 	nrm = vec3( nrm.x * fc + nrm.z * fs, nrm.y, -nrm.x * fs + nrm.z * fc );
 	axis = vec3( axis.x * fc + axis.z * fs, axis.y, -axis.x * fs + axis.z * fc );
 	vAxisW = normalize( mat3( modelMatrix ) * axis );
-	vDorsalW = normalize( mat3( modelMatrix ) * mix( uDorsalFold, uDorsalOpen, uOpen ) );
 `;
 
 const FEATHER_FRAGMENT_PARS = /* glsl */ `
@@ -458,8 +452,6 @@ varying float vExp;
 varying float vKind;
 // 收拢态的飞羽配色（展开后放回顶点色）
 uniform float uOpen;
-// 正反面按翼平面判的世界空间向量（顶点着色器算好传过来）
-varying vec3 vDorsalW;
 `;
 
 const FEATHER_SURFACE = /* glsl */ `
@@ -501,10 +493,13 @@ const FEATHER_SURFACE = /* glsl */ `
 	deep = mix( deep, vec3( 0.52, 0.49, 0.46 ), clamp( fringe, 0.0, 1.0 ) * 0.8 );
 	alb = mix( alb, deep, fold );
 	// 正反面：翼下（腹面）是银灰白的珍珠质感，深色羽轴清晰可读；翼上按羽色函数。
-	// 按翼平面的背腹朝向判，不按羽面法线：初级飞羽带弧度后，羽尖曲面在掠射角下 dot(N, V) 会翻号，把腹面的银白
-	// 画到背面的黑褐羽尖上（"白油漆尖"）。收拢态翼面朝外（±x）、满展态朝翼平面背侧，按 uOpen 过渡，随枢轴一起转；
-	// 几何法线两翅都朝背侧且镜像翻转绕序（gl_FrontFacing 左右相反），这两个判法都不可靠。尾羽两面色相同
-	float dorsal = step( 0.0, dot( normalize( vDorsalW ), V ) );
+	// 几何正面 = 物理背侧：FeatherBatch.add 对镜像的左翅翻过绕序，两翅每一个三角形的逆时针法线都朝体侧外 / 翼平面背侧，
+	// 所以展开态直接用光栅化的 gl_FrontFacing——由屏幕空间的真实绕序决定，不受羽尖弧度（N·V 会翻号出"白油漆尖"）、
+	// 法线微倾和透视相机偏心影响。按"翼平面法线 · 视线 V"判过：相机在正上方俯视时两翅像素的 V.x 一正一负，
+	// 整双收拢黑翅翻成银白；略偏一侧就被 vWorldPos.x = cameraPosition.x 的竖直平面劈成半黑半白。
+	// 收拢态翅膀贴着体侧，外露的只可能是背侧：uOpen 很小时恒为背侧，0.08 ~ 0.25 之间平滑交给 gl_FrontFacing。尾羽两面色相同
+	float faceDorsal = gl_FrontFacing ? 1.0 : 0.0;
+	float dorsal = mix( 1.0, faceDorsal, smoothstep( 0.08, 0.25, uOpen ) );
 	dorsal = max( dorsal, step( 2.5, vKind ) );
 	vec3 vent = mix( uVentPrim, uVentSec, step( 0.5, vKind ) );
 	// 腹面内翈（靠身体一侧）略暗一点，羽轴一条深色细线
@@ -567,10 +562,9 @@ const FEATHER_EXTRA_LIGHT = /* glsl */ `
 `;
 
 /**
- * 羽片材质。side = 1 右翅 / -1 左翅（尾羽传 1），dorsalOpen 是满展态翼平面的背侧法线（枢轴坐标，已按左右镜像，
- * wingTail.ts 的 wingDorsalN）：正反面按它判，不按会随羽尖弧度翻号的羽面法线。
+ * 羽片材质（双翅和尾羽共用）：正反面在片元里按几何正面 = 物理背侧用 gl_FrontFacing 判，收拢态恒为背侧（见 FEATHER_SURFACE）。
  */
-export function makeFeatherMaterial(lighting: LightingUniforms, rig: WingRigUniforms, side: 1 | -1 = 1, dorsalOpen?: Vector3): ShaderMaterial {
+export function makeFeatherMaterial(lighting: LightingUniforms, rig: WingRigUniforms): ShaderMaterial {
   return makeLitMaterial({
     lighting,
     side: DoubleSide,
@@ -578,8 +572,6 @@ export function makeFeatherMaterial(lighting: LightingUniforms, rig: WingRigUnif
     uniforms: {
       uSpread: { value: 0 },
       uOpen: rig.uOpen,
-      uDorsalFold: { value: new Vector3(side, 0, 0) },
-      uDorsalOpen: { value: dorsalOpen ?? new Vector3(0, 1, 0) },
       uVentPrim: { value: rgb('#c3c2c9') },
       uVentSec: { value: rgb('#ebe6dc') },
       uVentShaft: { value: rgb('#5c5153') },
