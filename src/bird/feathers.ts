@@ -21,7 +21,7 @@ import { makeLitMaterial, rgb, type LightingUniforms } from '../glsl/lit';
 export type FeatherColorFn = (across: number, along: number) => Color;
 
 /** 羽毛类别：翼下腹面配色、羽轴处理按它区分。 */
-export const FEATHER_KIND = { primary: 0, secondary: 1, covert: 2, other: 3 } as const;
+export const FEATHER_KIND = { primary: 0, secondary: 1, /** 三级飞羽：腹面配色同次级飞羽（kind ≥ 0.5），片元着色器按 1.5 单独识别 */ tertial: 1.5, covert: 2, other: 3 } as const;
 
 export interface FeatherSpec {
   length: number;
@@ -449,6 +449,8 @@ varying float vSoft;
 varying vec3 vAxisW;
 varying float vExp;
 varying float vKind;
+// 收拢态的飞羽配色（展开后放回顶点色）
+uniform float uOpen;
 `;
 
 const FEATHER_SURFACE = /* glsl */ `
@@ -481,6 +483,14 @@ const FEATHER_SURFACE = /* glsl */ `
 	float rim = exp( - pow( ( abs( vPhy.x ) - shaftW * 1.9 ) / ( shaftW * 0.6 ), 2.0 ) ) * ( 1.0 - smoothstep( 0.75, 1.0, along ) ) * shaftAtten;
 	alb *= 1.0 + rim * primShaft * 0.5 * ( 1.0 - rachis );
 	alb = mix( alb, mix( alb * 1.4 + 0.015, alb * 0.22, primShaft ), rachis * 0.8 );
+	// 收拢态的飞羽（uOpen → 0）：深邃暖炭黑褐的底色 + 外缘一线细而清晰的浅灰白羽缘——收拢翅后半段读出
+	// 一根根平行向尾基收束的条纹，不再是光滑的灰橡胶壳；展开后初级飞羽回到顶点色（烟灰炭褐）、
+	// 次级飞羽的外翈放成宽阔的奶油白翈（百褶扇）。三级飞羽的宽白内翈是顶点色，不受影响
+	float fold = ( 1.0 - uOpen ) * ( 1.0 - step( 1.25, vKind ) );
+	vec3 deep = mix( vec3( 0.030, 0.024, 0.026 ), vec3( 0.014, 0.011, 0.012 ), along );
+	float fringe = smoothstep( 0.94, 0.99, vFrag.x ) + smoothstep( 0.98, 1.0, along ) * 0.3;
+	deep = mix( deep, vec3( 0.52, 0.49, 0.46 ), clamp( fringe, 0.0, 1.0 ) * 0.8 );
+	alb = mix( alb, deep, fold );
 	// 正反面：翼下（腹面）是银灰白的珍珠质感，深色羽轴清晰可读；翼上按羽色函数。
 	// 几何法线两翅都朝背侧（左翅连法线一起镜像），但镜像会翻转绕序，gl_FrontFacing 左右相反，
 	// 所以用未被翻转的世界法线和视线点积判；尾羽两面色相同

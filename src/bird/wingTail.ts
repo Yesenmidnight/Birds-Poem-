@@ -59,10 +59,14 @@ const primary: FeatherColorFn = (across, along) => {
   const fringe = smooth(0.94, 1.0, across) * 0.7 + smooth(0.985, 1.0, along) * 0.3;
   return mix(base, WHITE, clamp(fringe, 0, 1) * 0.18);
 };
-/** 三级飞羽：黑，两缘各一条窄而清晰的奶油白羽缘——侧面那 2~3 道顺着翅长向后收束的细白线。 */
+/**
+ * 三级飞羽：朝背脊的内翈（across < 0；背面视图里靠背中线那一侧，用 vFrag.x 配色探针确认过）大半片是
+ * 干净醒目的奶油白，紧挨羽轴的一线和朝翅外侧的外翈是深黑褐，羽尖带一丝暖白——收拢时 3 片阶梯叠瓦就是 3 级黑白阶梯
+ */
 const tertial: FeatherColorFn = (across, along) => {
-  const edge = smooth(0.82, 0.94, Math.abs(across)) * 0.85 + smooth(0.9, 0.99, along) * 0.5;
-  return mix(BLACK, WHITE, clamp(edge, 0, 1) * 0.85);
+  const inner = smooth(0.2, 0.4, -across);
+  const tip = smooth(0.95, 1.0, along) * 0.35;
+  return mix(BLACK, WHITE, clamp(inner * 0.95 + tip * 0.5, 0, 1));
 };
 
 /** 尾羽：中央几对黑，最外侧一对白，倒数第二对外缘白。 */
@@ -166,23 +170,24 @@ interface SpreadRow {
  */
 const WING_ROWS: RowSpec[] = [
   {
-    // 初级飞羽：从腕部出发搭在次级飞羽上，9 片侧缘相压，收束成搭在尾基上方的尖长翅尖
+    // 初级飞羽：从腕部出发压在次级飞羽、三级飞羽下面，9 片侧缘相压。收拢时顺着体侧上后方一路贴着
+    // 臀部收窄的体表向背中线抱拢，羽尖在尾基正上方彼此靠拢——盖住下背两侧，不撇在圆肚子最外侧
     count: 9,
     rootA: [2.45, -0.5, 0.06],
     rootB: [2.6, -0.36, 0.066],
-    tipA: [2.55, -2.9],
-    tipB: [2.6, -3.3],
+    tipA: [2.78, -3.14],
+    tipB: [2.84, -3.24],
     dirA: [0, -0.1, -1],
     dirB: [0, -0.05, -1],
-    nrmA: [0.9, 0.42, 0.08],
-    nrmB: [0.75, 0.65, 0.12],
+    nrmA: [0.99, 0.02, 0.03],
+    nrmB: [0.99, 0.02, 0.03],
     lenA: 2.2,
     lenB: 2.6,
     width: 0.48,
     asym: 0.4,
     bare: 0.12,
     tipPos: 0.45,
-    tipPow: 1.4,
+    tipPow: 1.0,
     cup: 0,
     bow: 0,
     twist: 0.06,
@@ -192,19 +197,21 @@ const WING_ROWS: RowSpec[] = [
     // 满展：沿腕掌从腕到指尖依次排开，从朝后内（最内侧）扇到朝前外（最外侧），
     // 中段最长、内外两端渐短 → 宽阔圆弧翼尖；总扇幅约 90°，羽尖处外侧几片略分开
     kind: FEATHER_KIND.primary,
-    spread: { rootA: onManus(0.1, 0.05), rootB: onManus(1.0, 0), angA: 84, angB: -4, tilt: [0.08, 0], len: [0.78, 1.02, 0.9], white: 1, tip: 1.3, lift: 0 },
+    spread: { rootA: onManus(0.1, 0.05), rootB: onManus(1.0, 0), angA: 84, angB: -4, tilt: [0.08, 0], len: [0.69, 0.95, 0.89], white: 1, tip: 1.3, lift: 0 },
   },
   {
-    // 次级飞羽：从翅根朝后下方顺向叠瓦，连成一整片深色翼面，下缘一条奶油白细羽缘
+    // 次级飞羽：羽根沿翅前段从外侧下方（腕侧）斜排到内侧上方（背侧），羽轴一齐朝后下方指向尾基，彼此侧缘相压——
+    // 收拢时每片只露出靠外翈的一窄条，连成一整片向尾基收束的平行条纹（不再是顺着翅长一层压一层的瓦片）；
+    // 内侧（背侧）的压在外侧的上面，每片露出的正是带白羽缘的外翈
     count: 17,
-    rootA: [2.72, -0.3, 0.065],
-    rootB: [2.6, -1.7, 0.065],
-    dirA: [0.03, -0.37, -0.93],
-    dirB: [0.03, -0.37, -0.93],
-    nrmA: [0.94, 0.33, 0.05],
-    nrmB: [0.94, 0.33, 0.05],
-    lenA: 1.0,
-    lenB: 0.82,
+    rootA: [2.34, -0.72, 0.08],
+    rootB: [3.0, -1.0, 0.082],
+    dirA: [0.03, -0.3, -0.95],
+    dirB: [0.03, -0.12, -0.99],
+    nrmA: [0.99, 0.02, 0.03],
+    nrmB: [0.99, 0.02, 0.03],
+    lenA: 1.9,
+    lenB: 1.6,
     width: 0.42,
     asym: 0.6,
     bare: 0.1,
@@ -214,49 +221,51 @@ const WING_ROWS: RowSpec[] = [
     bow: 0,
     twist: 0,
     color: flight,
-    stack: 0.003,
-    expose: 0.89,
+    stack: -0.0004,
     tuckFront: 0.04,
     // 满展：沿前臂从腕端（A）到肘端（B）铺满内圈翼面，外侧的朝后外、内侧的朝后内（约 45° 扇幅）；
     // 收拢时为了翼面只做了 0.8~1.0 cm，展开后放到真鸟比例（约 1.5 cm）；白翈收窄成折扇里的一道道白褶
     kind: FEATHER_KIND.secondary,
-    spread: { rootA: onForearm(0.97, 0), rootB: onForearm(0.09, 0.08), angA: 76, angB: 122, tilt: [0.02, 0.3], len: [1.4, 1.6, 1.75], white: 0.34, tip: 1.15, lift: 0.04 },
+    spread: { rootA: onForearm(0.97, 0), rootB: onForearm(0.09, 0.08), angA: 76, angB: 122, tilt: [0.02, 0.3], len: [0.74, 0.83, 0.9], white: 0.34, tip: 1.15, lift: 0.04 },
   },
   {
-    // 三级飞羽：3 片上下错开、侧缘相压，盖在次级飞羽的中后段上，两缘的奶油白羽缘连成 2~3 道细白线
+    // 三级飞羽：收拢翅最靠背脊内侧的 3 片宽圆羽，由短到长、由高到低阶梯叠瓦（每片羽根比上一片低 0.35），
+    // 最上面（最靠背脊）的一片压在最上面：每片露出靠背脊的宽白内翈 + 一截黑心，3 级黑白阶梯；
+    // 盖在次级飞羽和大覆羽的内侧段上面，羽根埋在肩羽绒毛里
     count: 3,
-    rootA: [2.8, -0.85, 0.07],
-    rootB: [2.6, -1.2, 0.069],
-    dirA: [0.03, -0.26, -0.966],
+    rootA: [3.02, -0.95, 0.104],
+    rootB: [2.22, -1.25, 0.096],
+    dirA: [0.03, -0.32, -0.95],
     dirB: [0.03, -0.28, -0.96],
-    nrmA: [0.94, 0.33, 0.05],
-    nrmB: [0.94, 0.33, 0.05],
-    lenA: 1.15,
-    lenB: 1.1,
-    width: 0.5,
-    asym: 0.42,
+    nrmA: [0.99, 0.02, 0.03],
+    nrmB: [0.99, 0.02, 0.03],
+    lenA: 1.0,
+    lenB: 1.4,
+    width: 0.42,
+    // 内翈（白）0.21、外翈（黑）0.21 各占一半：羽根每片低 0.4，每片正好露出完整的一条白翈 + 一条黑翈，3 级黑白阶梯
+    asym: 0.5,
     bare: 0.08,
     tipPos: 0.5,
-    tipPow: 0.8,
+    tipPow: 0.7,
     cup: 0,
     bow: 0,
     twist: 0,
     color: tertial,
-    stack: 0,
-    tuckFront: 0.04,
+    stack: -0.003,
+    tuckFront: 0,
     // 满展：肘部的三级飞羽，朝后内盖住翅根和身体的接缝，压在次级飞羽内侧几片上面
-    kind: FEATHER_KIND.secondary,
-    spread: { rootA: onHumerus(1.0, 0.1), rootB: onHumerus(0.8, 0.05), angA: 112, angB: 126, tilt: [0.45, 0.6], len: [1.4, 1.45, 1.5], white: 0.45, tip: 1.3, lift: 0.12 },
+    kind: FEATHER_KIND.tertial,
+    spread: { rootA: onHumerus(1.0, 0.1), rootB: onHumerus(0.8, 0.05), angA: 112, angB: 126, tilt: [0.45, 0.6], len: [1.61, 1.4, 1.18], white: 0.45, tip: 1.3, lift: 0.12 },
   },
   {
     // 初级覆羽：盖住腕部初级飞羽的根部
     count: 5,
-    rootA: [2.62, -0.42, 0.07],
-    rootB: [2.56, -0.52, 0.07],
+    rootA: [2.62, -0.42, 0.08],
+    rootB: [2.56, -0.52, 0.08],
     dirA: [0.02, -0.21, -0.978],
     dirB: [0.02, -0.21, -0.978],
-    nrmA: [0.94, 0.33, 0.05],
-    nrmB: [0.94, 0.33, 0.05],
+    nrmA: [0.99, 0.02, 0.03],
+    nrmB: [0.99, 0.02, 0.03],
     lenA: 0.5,
     lenB: 0.46,
     width: 0.24,
@@ -278,12 +287,12 @@ const WING_ROWS: RowSpec[] = [
   {
     // 大覆羽：9 片宽而柔边的羽片顺翅长叠瓦，深炭黑褐，和白翼斑无关（见 covert）
     count: 9,
-    rootA: [2.98, -0.14, 0.08],
-    rootB: [2.92, -1.32, 0.08],
+    rootA: [2.98, -0.14, 0.112],
+    rootB: [2.92, -1.32, 0.112],
     dirA: [0.03, -0.22, -0.975],
     dirB: [0.03, -0.24, -0.97],
-    nrmA: [0.94, 0.33, 0.05],
-    nrmB: [0.94, 0.33, 0.05],
+    nrmA: [0.99, 0.02, 0.03],
+    nrmB: [0.99, 0.02, 0.03],
     lenA: 0.46,
     lenB: 0.42,
     width: 0.3,
@@ -297,8 +306,8 @@ const WING_ROWS: RowSpec[] = [
     color: covert,
     stack: 0.0015,
     expose: 0.66,
-    edgeSoft: 1,
-    // 上缘：整排羽根埋进肩背绒毛里，只有羽身露在外面
+    // 上缘：整排羽根埋进肩背绒毛里，只有羽身露在外面。羽缘不再用 edgeSoft 软化：软边半透明，底下压短的毛
+    // 从边里透出来就是一串黑麻点；边缘利落，靠外侧的肩背长毛漫过来搭住它
     tuckAll: 0.03,
     tuckFront: 0.03,
     // 满展：沿前臂盖住次级飞羽的根部
@@ -308,12 +317,12 @@ const WING_ROWS: RowSpec[] = [
   {
     // 中覆羽：最外层的黑色窄带，根部被肩背的玫瑰粉棕绒毛搭住
     count: 12,
-    rootA: [3.1, -0.1, 0.08],
-    rootB: [3.08, -1.15, 0.08],
+    rootA: [3.1, -0.1, 0.12],
+    rootB: [3.08, -1.15, 0.12],
     dirA: [0.03, -0.19, -0.98],
     dirB: [0.03, -0.21, -0.977],
-    nrmA: [0.93, 0.36, 0.05],
-    nrmB: [0.93, 0.36, 0.05],
+    nrmA: [0.99, 0.02, 0.03],
+    nrmB: [0.99, 0.02, 0.03],
     lenA: 0.4,
     lenB: 0.36,
     width: 0.16,
@@ -762,7 +771,7 @@ export function buildWingPanel(p: BodyParams, side: 1 | -1, placements: Placemen
     for (let j = 0; j < ny; j++) {
       if (!keep(i, j)) continue;
       const y = PANEL_Y0 + j * cell;
-      const x = surfaceHalfWidth(p, y, z) + 0.03;
+      const x = surfaceHalfWidth(p, y, z) + 0.045;
       vid[i * ny + j] = pos.length / 3;
       pos.push(side * x, y, z);
       bodyGradient(side * x, y, z, p, g);

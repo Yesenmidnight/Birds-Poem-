@@ -12,13 +12,22 @@ import { wingCoverField, wingPlacements } from './wingTail';
 import { clamp, lerp, smoothstep } from '../util/math';
 
 /**
- * 翼下压毛范围相对羽片覆盖边缘再往里收的距离（cm）。不能大：覆羽那一排的羽带只有 0.3 cm 宽，
- * 往里收 0.07 等于整排都不压毛，全长绒毛会把覆羽埋成一个个黑圆点。上缘、前缘外一圈的毛靠下面的
- * drape 判定保持全长，漫过翅边把翅包住
+ * 翅前缘处压毛的起点（cm，负值 = 从覆盖边缘往外这么多就开始压）：和上缘同理，从翅边以外 0.1 起往翅边渐短。
+ * 原来前缘从翅边以内 0.02 才开始、过渡 0.15（胸绒包翅）：前缘底下有一带毛是半长的，毛尖正好穿出黑覆羽，
+ * 斜前视角里翅前上缘碎成一串白麻点。胸侧的毛到翅边为止，翅面从第一片覆羽起干净
  */
-const WING_FUR_INSET = 0.02;
+const WING_FUR_INSET = -0.1;
+/**
+ * 翅上缘处压毛的起点（cm，负值 = 从覆盖边缘往外这么多就开始压）：从翅边以外 0.12 起往翅边渐短，到翅边压到底。
+ * 原来上缘和前缘一样从翅边以内 0.02 才开始、过渡 0.15——翅上缘底下有一带毛是半长的，毛尖正好穿出羽片，
+ * 黑覆羽卡在粉白长毛半腰碎成一串黑麻点。肩背长毛的毛尖向下够得到约 0.08 cm，翅边以外 0.12 内的毛按距离
+ * 渐短，没有一根毛尖能越过翅边——翅上缘是干净的毛→羽过渡，不是一串穿出黑羽的白点
+ */
+const WING_FUR_INSET_TOP = -0.12;
 /** 翅下缘、翅尖以外仍保持短绒的距离（cm，负值 = 从覆盖边缘往外再压这么多）：翅的下缘和尖才干净。 */
 const WING_FUR_UNDER = -0.1;
+/** 翼下短绒相对全长毛长的系数。压短的毛尖（约 0.03~0.08）必须低于羽片的离面高度（0.06~0.09）才不会穿出羽片。 */
+const WING_FUR_PRESS = 0.11;
 
 /**
  * 把躯体距离场变成网格，并给每个顶点算出绒毛着色器需要的一切：
@@ -107,6 +116,15 @@ export function buildBody(params: BodyParams = LONG_TAILED_TIT, cell = 0.055): B
     let tx = 0.08 * Math.sign(x) * Math.abs(nx);
     let ty = -0.32 - 0.5 * low * (1 - Math.abs(ny));
     let tz = -1.0;
+    // 肩羽（黑领后方到背中短尖之间的背上部两侧）的毛流略向后内侧倒：焦糖肉桂→奶白的肩羽顺着毛流向背中央汇成 V 字
+    const scapZone = smoothstep(-0.4, -0.7, z) * (1 - smoothstep(-1.4, -1.7, z)) * smoothstep(2.85, 3.05, y);
+    const scapTilt = scapZone * smoothstep(0.15, 0.45, Math.abs(x)) * (1 - smoothstep(0.55, 0.75, Math.abs(x)));
+    // 翅上缘外侧 0.3 cm 以内（还没压毛）的肩背长毛向下、向外侧倒，毛尖漫过收拢翅的上缘把它搭住——
+    // 只有翅边以外长出来的毛才会平躺着盖在翅上；翅边底下压短的毛绝不能穿出来（穿出来是一根根立着的白点）
+    const wingCoverHere = wingCover.sample(y, z);
+    const drapeTilt = scapZone * smoothstep(0.25, 0.55, ny) * smoothstep(-0.3, -0.08, wingCoverHere) * (1 - smoothstep(0.0, 0.04, wingCoverHere));
+    tx = tx * (1 - scapTilt) - 0.22 * Math.sign(x) * scapTilt + 0.03 * Math.sign(x) * drapeTilt;
+    ty -= 0.05 * drapeTilt;
     dot = tx * nx + ty * ny + tz * nz;
     tx -= nx * dot;
     ty -= ny * dot;
@@ -190,15 +208,23 @@ export function buildBody(params: BodyParams = LONG_TAILED_TIT, cell = 0.055): B
     }
     // 翼下压毛：严格按收拢翅正羽的真实覆盖范围来（羽片投影 + 距离变换，和翼内底壳同一个场）——
     // 只有真正被黑翅盖在正下方的柳叶心部才把毛压成柔和短绒，再按边缘朝向决定压毛范围从哪里开始：
-    // 上缘、前缘以外（肩背、胸侧）的毛全长，漫过翅边把翅包住；下缘以外 0.1 cm 内仍是短绒，
-    // 翅的下缘才不会被白毛刷边。过渡带都是 0.15 cm 宽，没有平底凹坑和断崖
+    // 上缘、前缘、下缘一律从翅边以外 0.1~0.12 cm 就开始渐短、到翅边压到底——毛到翅边为止，
+    // 没有一根毛尖能穿出羽片；翅边以外再远的毛（肩背、胸侧）保持全长。过渡带 0.1~0.12 cm 宽，没有断崖
     const cover = wingCover.sample(y, z);
     const drape = Math.max(smoothstep(-0.1, 0.4, ny), smoothstep(0.3, 0.6, nz));
-    const inset = lerp(WING_FUR_UNDER, WING_FUR_INSET, drape);
-    const panel = smoothstep(0.15, 0.4, Math.abs(nx)) * smoothstep(inset, inset + 0.15, cover);
+    let inset = lerp(WING_FUR_UNDER, WING_FUR_INSET, drape);
+    // 翅上缘（覆盖区在正下方）和翅前缘（覆盖区在正后方）按覆盖距离场的梯度判，不用表面法线：
+    // 肩前方前后后的法线方向变化太大。上缘再多压 0.02（肩背长毛比胸侧毛长、向下够得远）
+    const topEdge = smoothstep(0.05, 0.2, wingCover.sample(y - 0.15, z) - wingCover.sample(y + 0.15, z));
+    const frontEdge = smoothstep(0.05, 0.2, wingCover.sample(y, z - 0.15) - wingCover.sample(y, z + 0.15));
+    inset = lerp(inset, WING_FUR_INSET_TOP, topEdge * (1 - frontEdge));
+    // 过渡带 0.12 宽、上缘 0.1：翅边底下压到底，翅边以外紧挨着的毛还是全长——毛到翅边为止，
+    // 中间没有半长的毛尖穿出羽片
+    const ramp = lerp(0.12, 0.1, topEdge * (1 - frontEdge));
+    const panel = smoothstep(0.15, 0.4, Math.abs(nx)) * smoothstep(inset, inset + ramp, cover);
     // 被翅压住之前的毛长单独存进 aPress：翅展开后着色器按展翅度把它放回全长（见 fur.ts 的 uWingOpen）
     press.set([furLen], i);
-    furLen = furLen * (1 - panel) + 0.22 * panel;
+    furLen = furLen * (1 - panel) + WING_FUR_PRESS * panel;
     // 腹底靠近腿的位置也短一些
     furLen *= 0.7 + 0.3 * smoothstep(0.35, 0.7, y);
 

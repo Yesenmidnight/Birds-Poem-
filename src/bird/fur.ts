@@ -90,6 +90,8 @@ varying vec3 vParam;
 varying float vT;
 varying float vClump;
 varying vec3 vStrandT;
+// 头颈两根骨骼的权重和：羽色按它把关——跟着头转的皮肤只能是白毛（plumage.ts 的黑鞍领前缘）
+varying float vBoneW;
 `;
 
 const FUR_VERTEX_MAIN = /* glsl */ `
@@ -178,6 +180,7 @@ const FUR_VERTEX_MAIN = /* glsl */ `
 	vRestN = normal;
 	vRestFlow = aFlow;
 	vParam = vec3( furK, aParam.y, aParam.z );
+	vBoneW = aW.x + aW.y;
 	vT = t;
 	vClump = clumpAmt;
 	vStrandT = normalize( mat3( modelMatrix ) * ( nL * cos( phi ) + T * sin( phi ) ) );
@@ -197,6 +200,7 @@ varying vec3 vParam;
 varying float vT;
 varying float vClump;
 varying vec3 vStrandT;
+varying float vBoneW;
 `;
 
 const FUR_SURFACE = /* glsl */ `
@@ -222,8 +226,9 @@ const FUR_SURFACE = /* glsl */ `
 	#endif
 	Surf s;
 	s.alpha = alpha;
-	// 明暗的细碎起伏也只看空间坐标，保持连续。羽色按静止坐标算：口腔暗区、口角线、眼圈皮肤都写死在静止坐标里
-	s.albedo = plumage( vRestPos, normalize( vRestN ), vParam.z ) * ( 0.94 + 0.12 * ( snoise( vRestPos * 9.0 ) * 0.5 + 0.5 ) );
+	// 明暗的细碎起伏也只看空间坐标，保持连续。羽色按静止坐标算：口腔暗区、口角线、眼圈皮肤都写死在静止坐标里；
+	// 黑鞍领的前缘还要按头颈骨骼权重退让（boneW），大角度转头时后颈窝不会拽出黑尖角
+	s.albedo = plumage( vRestPos, normalize( vRestN ), vParam.z, vBoneW ) * ( 0.94 + 0.12 * ( snoise( vRestPos * 9.0 ) * 0.5 + 0.5 ) );
 	// 簇与簇之间的凹处更暗一点
 	s.ao = mix( 0.42, 1.0, pow( vT, 0.55 ) ) * ( 0.7 + 0.3 * vClump );
 	s.wrap = 0.55;
@@ -290,7 +295,8 @@ export class Fur {
       uStrokeAge: { value: new Array<number>(MAX_STROKES).fill(0) },
       uColWhite: { value: rgb('#ebe6de') },
       uColPink: { value: rgb('#e2c0b9') },
-      uColRose: { value: rgb('#b9847c') },
+      // 肩羽的焦糖肉桂 / 暖赤陶杏（plumage.ts 的 V 字肩羽上半段）
+      uColRose: { value: rgb('#c48a6e') },
       uColBlack: { value: rgb('#1b191d') },
       uColCrown: { value: rgb('#f0dcd2') },
       uColSkin: { value: rgb('#4a3c38') },
