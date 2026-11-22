@@ -162,15 +162,22 @@ export function buildBody(params: BodyParams = LONG_TAILED_TIT, cell = 0.055): B
     const beakD = Math.hypot(x - bx, y - by, z - bz);
     furLen *= 0.55 + 0.45 * smoothstep(0.15, 0.45, beakD);
     const bUp = (y - by) * upy + (z - bz) * upz;
-    furLen *= smoothstep(0.95, 1.2, Math.hypot(x / 0.15, (bUp - 0.03) / 0.12));
-    // 口腔：张嘴时从上下颌之间露出来的体表（颌根截面以内，含嘴根前方鼓出来的那一段）不长毛，着色器再把它染成深暗的口腔色。
-    // 范围与 plumage.ts 的口腔色一致：合拢时这一块全被上下颌盖住
+    // 沿喙轴的坐标：原点在嘴根，向前为正。喙底的压毛和口腔都必须有沿喙轴的下限——这两条圆柱如果只设上限，
+    // 就会沿着喙轴一路向后穿过脑壳，从后枕下方的背上钻出来，在鞍背正中剃出一块黑秃坑
     const bAl = (y - by) * bdy + (z - bz) * bdz;
+    // 喙壳底下的体表压毛：只在嘴根及其前方（下限 -0.18~-0.05），嘴根后方的脸照常长毛，嘴根不剃秃
+    const beakRoot = smoothstep(-0.18, -0.05, bAl);
+    furLen *= 1 - (1 - smoothstep(0.95, 1.2, Math.hypot(x / 0.15, (bUp - 0.03) / 0.12))) * beakRoot;
+    // 口腔：张嘴时从上下颌之间露出来的体表（颌根截面以内，含嘴根前方鼓出来的那一段）不长毛，着色器再把它染成口腔色。
+    // 范围与 plumage.ts 的口腔色一致：合拢时这一块全被上下颌盖住；沿喙轴只到颌根稍后（下限 -0.22~-0.08）
+    // 截面必须严格落在上下颌壳的轮廓以内（颌壳基部半宽 0.168、上高 0.15、下高 0.088，往前收细），
+    // 稍大一点合拢时嘴根两侧就会露出一线口腔色
     const mouth =
-      (1 - smoothstep(0.1, 0.135, Math.abs(x))) *
-      (1 - smoothstep(0.09, 0.12, bUp)) *
-      smoothstep(-0.05, -0.02, bUp) *
-      (1 - smoothstep(0.14, 0.2, bAl));
+      (1 - smoothstep(0.08, 0.11, Math.abs(x))) *
+      (1 - smoothstep(0.07, 0.095, bUp)) *
+      smoothstep(-0.03, -0.01, bUp) *
+      (1 - smoothstep(0.12, 0.17, bAl)) *
+      smoothstep(-0.22, -0.08, bAl);
     furLen *= 1 - mouth;
     // 口角线上的毛略短，嘴角向后延伸的暗线才读得出来
     {
@@ -203,11 +210,12 @@ export function buildBody(params: BodyParams = LONG_TAILED_TIT, cell = 0.055): B
     //    刚体的眼球和上下喙整组跟头骨转，大角度转头也不会滑出眼窝露黑边；份额跌到 0.15 以下是躯干。
     // 2) 颈圈过渡带（份额 0.15~0.42）里颈骨只分担一部分：份额 0.1 以下完全归躯干，上背、双肩、翼根
     //    （份额 ≈ 0.02~0.06）和下胸腹部都是 0，转头时一丝都不动。
-    // 3) 后背再加一道 z 门限：z < -0.3 的背部、臀部全部归躯干，只在后枕 z ≈ -0.3~-0.12 之间渐变。
+    // 3) 后背再加一道 z 门限：z < -0.55 的背部、臀部全部归躯干，后枕到上背之间 z ≈ -0.55~-0.1 柔和渐变——
+    //    门限太陡（-0.3~-0.12）大角度转头时后枕会留下一道斜向折痕；翼根、双肩的份额本来就只有 0.02~0.06，放宽门限也不会被带动。
     const sk = nd.map((d) => Math.exp(-(d - best) / 0.3));
     const skSum = sk[0] + sk[1] + sk[2] + sk[3] + sk[4] + sk[5];
     const headShare = sk[0] / skSum;
-    const backGate = smoothstep(-0.3, -0.12, z);
+    const backGate = smoothstep(-0.55, -0.1, z);
     const wHeadBone = smoothstep(0.15, 0.42, headShare) * backGate;
     const wNeckBone = (1 - wHeadBone) * smoothstep(0.1, 0.33, headShare) * backGate;
     weights.set([wNeckBone, wHeadBone], i * 2);

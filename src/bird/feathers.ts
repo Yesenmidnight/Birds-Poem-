@@ -77,6 +77,8 @@ export interface FeatherRig {
   lenScale: number;
   /** 满展时白翈（羽轴局部 +x 一侧）的宽度缩放：收拢时是细白边，展开后按真鸟折扇的宽窄调。 */
   whiteScale: number;
+  /** 满展时羽尖放宽（0 = 不放）：把收拢态的尖羽尖展成圆润的汤匙头，收拢态不受影响。 */
+  tipFull: number;
   /** 跟随权重：羽片 1；翼内底壳按部位 0~0.9 渐变（后段留在体表上）。 */
   weight: number;
 }
@@ -119,7 +121,8 @@ function widthProfile(v: number, tipPos: number, tipPow: number): number {
  * 2. 每片羽绕收拢态的羽根转 open × 角度（Rodrigues），再按 open 平移到展开态的羽根；
  * 3. 满展时沿羽长、白翈宽度各有一个缩放，按 open 渐变（收拢态完全不受影响）；
  * 4. 跟随权重 < 1 的顶点（翼内底壳）在原位和变形结果之间混合。
- * 顶点属性槽只有 16 个，绑定数据打包成三个 vec4 + 一个 vec4 杂项。
+ * 顶点属性槽只有 16 个，绑定数据打包成三个 vec4 + 一个 vec4 杂项（aFrag / aSize 的声明也放在这里，
+ * 羽片材质、底壳材质、阴影深度材质共用）。
  */
 export const WING_SKIN_PARS = /* glsl */ `
 // 收拢态羽根 xyz、跟随权重
@@ -128,8 +131,11 @@ attribute vec4 aRigA;
 attribute vec4 aRigB;
 // 收拢 → 展开的旋转轴 xyz（单位）、角度（弧度）
 attribute vec4 aRigC;
-// 未贴体的 x、满展时白翈宽度缩放、羽类别
+// 未贴体的 x、满展时白翈宽度缩放、羽类别、满展时羽尖放宽
 attribute vec4 aMisc;
+// 羽片的横向 / 纵向参数化（across -1..1，白翈在 > 0 一侧；along 0..1）和 (羽长, 羽宽)
+attribute vec2 aFrag;
+attribute vec2 aSize;
 uniform float uOpen;
 
 vec3 wingRot( vec3 v, vec3 ax, float ang ) {
@@ -149,11 +155,11 @@ vec3 wingSkinPoint( vec3 p, vec3 nrm, inout vec3 axis ) {
 	vec3 rel = p - aRigA.xyz;
 	float along = dot( rel, axis );
 	vec3 across = rel - along * axis;
-	// 白翈在羽轴局部 +x 一侧（= axis × nrm）
-	vec3 xDir = cross( axis, nrm );
-	float xl = length( xDir );
-	float sgn = xl > 1e-5 ? step( 0.0, dot( across, xDir / xl ) ) : 1.0;
-	float wScale = mix( 1.0, aMisc.y, uOpen * sgn );
+	// 白翈在横向参数 aFrag.x > 0 的一侧。不能用叉积 axis × nrm 判：左翅是镜像几何，叉积手性反号会选到黑翈那侧
+	float wScale = mix( 1.0, aMisc.y, uOpen * step( 0.0, aFrag.x ) );
+	// 满展时羽尖放宽成圆润的汤匙头（收拢态不受影响）：越靠羽尖横向放得越宽，羽尖不再是尖飞镖
+	float u = aSize.x > 1e-5 ? clamp( along / aSize.x, 0.0, 1.0 ) : 0.0;
+	wScale *= 1.0 + uOpen * aMisc.w * smoothstep( 0.45, 1.0, u );
 	float lScale = mix( 1.0, aRigB.w, uOpen );
 	rel = axis * ( along * lScale ) + across * wScale;
 	float ang = aRigC.w * uOpen;
@@ -187,6 +193,7 @@ export class FeatherBatch {
   private readonly rigC: number[] = [];
   private readonly openX: number[] = [];
   private readonly white: number[] = [];
+  private readonly tipFull: number[] = [];
   private readonly kind: number[] = [];
   /** 每片羽的羽根、羽轴方向、长度和它在合并网格里的起始顶点，贴体弯曲时按羽长参数分段用。 */
   private readonly frames: { root: Vector3; dir: Vector3; len: number; base: number }[] = [];
@@ -275,12 +282,14 @@ export class FeatherBatch {
         this.rigB.push(rig.trans.x, rig.trans.y, rig.trans.z, rig.lenScale);
         this.rigC.push(rig.axis.x, rig.axis.y, rig.axis.z, rig.angle);
         this.white.push(rig.whiteScale);
+        this.tipFull.push(rig.tipFull);
         this.kind.push(rig.kind);
       } else {
         this.rigA.push(0, 0, 0, 0);
         this.rigB.push(0, 0, 0, 1);
         this.rigC.push(0, 1, 0, 0);
         this.white.push(1);
+        this.tipFull.push(0);
         this.kind.push(FEATHER_KIND.other);
       }
     }
@@ -337,7 +346,7 @@ export class FeatherBatch {
     g.setAttribute('aRigC', new BufferAttribute(new Float32Array(this.rigC), 4));
     const n = this.kind.length;
     const misc = new Float32Array(n * 4);
-    for (let i = 0; i < n; i++) misc.set([this.openX[i], this.white[i], this.kind[i], 0], i * 4);
+    for (let i = 0; i < n; i++) misc.set([this.openX[i], this.white[i], this.kind[i], this.tipFull[i]], i * 4);
     g.setAttribute('aMisc', new BufferAttribute(misc, 4));
     g.setIndex(this.idx);
     if (this.conformed) {
@@ -370,10 +379,8 @@ export function mirrorMatrix(m: Matrix4): Matrix4 {
 
 const FEATHER_VERTEX_PARS = /* glsl */ `
 ${WING_SKIN_PARS}
-attribute vec2 aFrag;
 attribute vec3 aCol;
 attribute vec2 aPhy;
-attribute vec2 aSize;
 attribute float aSoft;
 attribute vec2 aFan;
 attribute vec3 aAxis;
@@ -446,9 +453,9 @@ const FEATHER_SURFACE = /* glsl */ `
 	alb *= 1.0 + ( streak - 0.5 ) * 0.12 * sAtten;
 	alb *= 1.0 - 0.12 * smoothstep( 0.55, 1.0, vFrag.x );
 	// 羽轴：一条细而有光泽的中线（初级飞羽的羽轴反而更深更清晰）
-	float rachis = exp( - pow( vPhy.x / 0.013, 2.0 ) ) * ( 1.0 - smoothstep( 0.85, 1.0, along ) );
+	float rachis = exp( - pow( vPhy.x / 0.016, 2.0 ) ) * ( 1.0 - smoothstep( 0.85, 1.0, along ) );
 	float primShaft = 1.0 - step( 0.5, vKind );
-	alb = mix( alb, mix( alb * 1.4 + 0.015, alb * 0.45, primShaft ), rachis * 0.6 );
+	alb = mix( alb, mix( alb * 1.4 + 0.015, alb * 0.3, primShaft ), rachis * 0.7 );
 	// 正反面：翼下（腹面）是银灰白的珍珠质感，深色羽轴清晰可读；翼上按羽色函数。
 	// 几何法线两翅都朝背侧（左翅连法线一起镜像），但镜像会翻转绕序，gl_FrontFacing 左右相反，
 	// 所以用未被翻转的世界法线和视线点积判；尾羽两面色相同

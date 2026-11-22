@@ -148,7 +148,11 @@ interface SpreadRow {
   /** 羽轴再往上翘的分量（A → B）：靠近身体的内侧羽片要搭在鼓起的背 / 臀部绒毛上面，不能扎进身体里。 */
   tilt: [number, number];
   len: [number, number, number];
+  /** 满展时白翈宽度缩放 */
   white: number;
+  /** 满展时羽尖放宽（汤匙圆头） */
+  tip: number;
+  /** 满展时沿背侧法线的叠放高度（覆羽压在飞羽上面） */
   lift: number;
 }
 
@@ -188,7 +192,7 @@ const WING_ROWS: RowSpec[] = [
     // 满展：沿腕掌从腕到指尖依次排开，从朝后内（最内侧）扇到朝前外（最外侧），
     // 中段最长、内外两端渐短 → 宽阔圆弧翼尖；总扇幅约 90°，羽尖处外侧几片略分开
     kind: FEATHER_KIND.primary,
-    spread: { rootA: onManus(0.1, 0.05), rootB: onManus(1.0, 0), angA: 84, angB: -4, tilt: [0.08, 0], len: [0.78, 1.02, 0.9], white: 1, lift: 0 },
+    spread: { rootA: onManus(0.1, 0.05), rootB: onManus(1.0, 0), angA: 84, angB: -4, tilt: [0.08, 0], len: [0.78, 1.02, 0.9], white: 1, tip: 1.3, lift: 0 },
   },
   {
     // 次级飞羽：从翅根朝后下方顺向叠瓦，连成一整片深色翼面，下缘一条奶油白细羽缘
@@ -216,7 +220,7 @@ const WING_ROWS: RowSpec[] = [
     // 满展：沿前臂从腕端（A）到肘端（B）铺满内圈翼面，外侧的朝后外、内侧的朝后内（约 45° 扇幅）；
     // 收拢时为了翼面只做了 0.8~1.0 cm，展开后放到真鸟比例（约 1.5 cm）；白翈收窄成折扇里的一道道白褶
     kind: FEATHER_KIND.secondary,
-    spread: { rootA: onForearm(0.97, 0), rootB: onForearm(0.09, 0.08), angA: 76, angB: 122, tilt: [0.02, 0.3], len: [1.4, 1.6, 1.75], white: 0.55, lift: 0.04 },
+    spread: { rootA: onForearm(0.97, 0), rootB: onForearm(0.09, 0.08), angA: 76, angB: 122, tilt: [0.02, 0.3], len: [1.4, 1.6, 1.75], white: 0.34, tip: 1.15, lift: 0.04 },
   },
   {
     // 三级飞羽：3 片上下错开、侧缘相压，盖在次级飞羽的中后段上，两缘的奶油白羽缘连成 2~3 道细白线
@@ -242,7 +246,7 @@ const WING_ROWS: RowSpec[] = [
     tuckFront: 0.04,
     // 满展：肘部的三级飞羽，朝后内盖住翅根和身体的接缝，压在次级飞羽内侧几片上面
     kind: FEATHER_KIND.secondary,
-    spread: { rootA: onHumerus(1.0, 0.1), rootB: onHumerus(0.8, 0.05), angA: 112, angB: 126, tilt: [0.45, 0.6], len: [1.4, 1.45, 1.5], white: 0.6, lift: 0.12 },
+    spread: { rootA: onHumerus(1.0, 0.1), rootB: onHumerus(0.8, 0.05), angA: 112, angB: 126, tilt: [0.45, 0.6], len: [1.4, 1.45, 1.5], white: 0.45, tip: 1.3, lift: 0.12 },
   },
   {
     // 初级覆羽：盖住腕部初级飞羽的根部
@@ -269,7 +273,7 @@ const WING_ROWS: RowSpec[] = [
     tuckFront: 0.04,
     // 满展：沿腕掌盖在初级飞羽根部上方，方向比初级飞羽略收拢
     kind: FEATHER_KIND.covert,
-    spread: { rootA: onManus(0.12, 0.1), rootB: onManus(0.87, 0.08), angA: 46, angB: 4, tilt: [0.05, 0], len: [1.7, 1.8, 1.8], white: 1.6, lift: 0.03 },
+    spread: { rootA: onManus(0.12, 0.1), rootB: onManus(0.87, 0.08), angA: 46, angB: 4, tilt: [0.05, 0], len: [1.7, 1.8, 1.8], white: 1.6, tip: 1.2, lift: 0.03 },
   },
   {
     // 大覆羽：9 片宽而柔边的羽片顺翅长叠瓦，深炭黑褐，和白翼斑无关（见 covert）
@@ -299,7 +303,7 @@ const WING_ROWS: RowSpec[] = [
     tuckFront: 0.03,
     // 满展：沿前臂盖住次级飞羽的根部
     kind: FEATHER_KIND.covert,
-    spread: { rootA: onForearm(0.95, 0.12), rootB: onForearm(0.07, 0.14), angA: 80, angB: 108, tilt: [0, 0.12], len: [1.5, 1.5, 1.5], white: 1.35, lift: 0.04 },
+    spread: { rootA: onForearm(0.95, 0.12), rootB: onForearm(0.07, 0.14), angA: 80, angB: 108, tilt: [0, 0.12], len: [1.5, 1.5, 1.5], white: 1.35, tip: 1.2, lift: 0.04 },
   },
   {
     // 中覆羽：最外层的黑色窄带，根部被肩背的玫瑰粉棕绒毛搭住
@@ -327,7 +331,7 @@ const WING_ROWS: RowSpec[] = [
     tuckAll: 0.04,
     tuckFront: 0.03,
     kind: FEATHER_KIND.covert,
-    spread: { rootA: onForearm(0.9, 0.34), rootB: onHumerus(0.3, 0.4), angA: 72, angB: 104, tilt: [0, 0.12], len: [1.5, 1.5, 1.5], white: 2.0, lift: 0.05 },
+    spread: { rootA: onForearm(0.9, 0.34), rootB: onHumerus(0.3, 0.4), angA: 72, angB: 104, tilt: [0, 0.12], len: [1.5, 1.5, 1.5], white: 2.0, tip: 1.2, lift: 0.05 },
   },
 ];
 
@@ -465,8 +469,8 @@ interface PlacedFeather {
   spec: FeatherSpec;
   placement: Placement;
   kind: number;
-  /** 满展态（右翅枢轴坐标）：羽根、羽轴方向、羽长缩放、白翈宽度缩放 */
-  spread: { root: Vector3; dir: Vector3; lenScale: number; whiteScale: number };
+  /** 满展态（右翅枢轴坐标）：羽根、羽轴方向、羽长缩放、白翈宽度缩放、羽尖放宽 */
+  spread: { root: Vector3; dir: Vector3; lenScale: number; whiteScale: number; tipFull: number };
 }
 
 /**
@@ -557,6 +561,7 @@ function placeWingFeathers(p: BodyParams, seed = 5): PlacedFeather[] {
           // 沿羽长缩放给三点，中间按二次插值
           lenScale: quad(row.spread.len[0], row.spread.len[1], row.spread.len[2], f),
           whiteScale: row.spread.white,
+          tipFull: row.spread.tip,
         },
         kind: row.kind,
       });
@@ -593,6 +598,7 @@ export function buildWing(p: BodyParams, seed = 5, side: 1 | -1 = 1): FeatherSet
       trans: new Vector3(side * (f.spread.root.x - root.x), f.spread.root.y - root.y, f.spread.root.z - root.z),
       lenScale: f.spread.lenScale,
       whiteScale: f.spread.whiteScale,
+      tipFull: f.spread.tipFull,
       weight: 1,
     };
     batch.add(f.spec, side === 1 ? m : mirrorMatrix(m), rig);
@@ -601,6 +607,12 @@ export function buildWing(p: BodyParams, seed = 5, side: 1 | -1 = 1): FeatherSet
 
   const geometry = batch.build();
   geometry.translate(-side * WING_PIVOT.x, -WING_PIVOT.y, -WING_PIVOT.z);
+  // aMisc.x（未贴体的 x）是鸟局部坐标，BufferGeometry.translate 只动 position：这里同步减掉枢轴，
+  // 它才和 position、aRigA.xyz 在同一个翅枢轴坐标系里——否则一展翅每个顶点先往外瞬移 0.75 cm 再绕羽根转，
+  // 各排羽会浮在翼平面上方彼此分开
+  const misc = geometry.attributes.aMisc as BufferAttribute;
+  for (let i = 0; i < misc.count; i++) misc.setX(i, misc.getX(i) - side * WING_PIVOT.x);
+  misc.needsUpdate = true;
   return { geometry, count: batch.count, placements: feathers.map((f) => f.placement) };
 }
 
@@ -740,7 +752,7 @@ export function buildWingPanel(p: BodyParams, side: 1 | -1, placements: Placemen
   const nrm: number[] = [];
   const alp: number[] = [];
   const idx: number[] = [];
-  // 可展翅：肩段（枢轴后方 1.9 cm 以内）跟着肱骨走，更靠后的部分留在体表上、展翅时在材质里渐隐
+  // 可展翅：只有肩段（枢轴后方 0.6 cm 以内）跟着肱骨走，更靠后的部分不跟、展翅时在材质里彻底渐隐（不留白带）
   const bones: number[] = [];
   const chord: number[] = [];
   const vid = new Int32Array(nz * ny).fill(-1);
@@ -757,7 +769,7 @@ export function buildWingPanel(p: BodyParams, side: 1 | -1, placements: Placemen
       const gl = Math.hypot(g[0], g[1], g[2]) || 1;
       nrm.push((side * g[0]) / gl, g[1] / gl, g[2] / gl);
       alp.push(alpha(dist[i * ny + j]));
-      bones.push(0.9 * smooth(-1.9, -0.9, z - WING_PIVOT.z));
+      bones.push(0.9 * smooth(-1.25, -0.6, z - WING_PIVOT.z));
       // 底壳的"羽轴"取竖直方向：满展时沿这个方向把弦长压到 0.55，前缘才不会伸出翅的前缘
       chord.push(0, -1, 0);
     }
@@ -827,7 +839,7 @@ varying vec3 vPanelP;
 `,
     vertexMain: /* glsl */ `
 	vPanelP = pos;
-	vFade = aDist * ( 1.0 - uOpen * smoothstep( 1.5, 2.2, -pos.z ) );
+	vFade = aDist * ( 1.0 - uOpen * smoothstep( 0.8, 1.3, -pos.z ) );
 	vec3 axis = aAxis;
 	pos = wingSkinPoint( pos, nrm, axis );
 	nrm = wingSkinDir( nrm );

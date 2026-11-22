@@ -31,16 +31,18 @@ vec3 plumage( vec3 p, vec3 n, float eyeD ) {
 	vec3 col = uColWhite;
 	float side = smoothstep( 0.25, 0.75, abs( n.x ) );
 
-	// T 字黑鞍背：后枕白毛下方一道横过上背的深炭黑横带（约 0.6 cm 宽），沿脊柱正中线收窄成一条细纵带延伸到尾根。
-	// 横带的前缘在中线处紧贴后枕（z≈0.15），到肩侧退到翅膀前缘以后（z≈-0.15），不会绕到肩膀前面；
-	// 两缘用噪声打散；纵带只在中线附近约 0.4 cm 宽，到尾上覆羽之前停
+	// 楔形黑鞍背：后枕白毛下方一道深炭黑横贯两肩之间的整个背宽，往下（往尾基）自然收束成上宽下窄的楔形，
+	// 到尾上覆羽前收成细尖停住——不是"一横 + 一根等宽直棍"的丁字尺。
+	// 前缘在中线处紧贴后枕（z≈0.15），到肩侧退到翅膀前缘以后（z≈-0.15），不会绕到肩膀前面；
+	// 两缘用两层噪声打散成丝缕，边界柔和不发白
 	float up = smoothstep( 0.15, 0.6, n.y );
 	float zFront = 0.15 - 0.3 * smoothstep( 0.3, 0.9, abs( p.x ) );
 	float behindNape = 1.0 - smoothstep( zFront - 0.15, zFront, p.z );
-	float band = behindNape * smoothstep( -0.85, -0.55, p.z );
-	float spine = ( 1.0 - smoothstep( 0.1, 0.26, abs( p.x ) ) ) * smoothstep( -2.9, -2.5, p.z ) * ( 1.0 - smoothstep( -0.75, -0.55, p.z ) );
-	float mantle = up * max( band, spine );
-	mantle = smoothstep( 0.35, 0.65, mantle + ( snoise( p * 9.0 ) - 0.5 ) * 0.16 );
+	float wedge = 0.95 * pow( clamp( ( p.z + 2.75 ) / 2.9, 0.0, 1.0 ), 0.55 );
+	float inWedge = 1.0 - smoothstep( wedge - 0.1, wedge + 0.14, abs( p.x ) );
+	float mantle = up * behindNape * inWedge;
+	float fray = ( snoise( p * 9.0 ) - 0.5 ) * 0.2 + ( snoise( p * 26.0 + 3.0 ) - 0.5 ) * 0.12;
+	mantle = smoothstep( 0.3, 0.62, mantle + fray );
 
 	// 两胁、下腹到尾下覆羽的葡萄酒粉晕，越靠后越浓
 	float low = 1.0 - smoothstep( 1.1, 2.8, p.y );
@@ -69,13 +71,14 @@ vec3 plumage( vec3 p, vec3 n, float eyeD ) {
 	rose = max( rose, cape );
 
 	col = mix( col, mix( uColRose, uColWhite, 0.2 ), rose * ( 1.0 - mantle ) );
-	col = mix( col, uColBlack, mantle );
+	col = mix( col, uColBlack * 0.75, mantle );
 
 	// 收拢的翼面底下的体表不再垫深色：正羽底下有自己的深色底板，羽片之间不透体表；
 	// 抬翅时露出来的这一块就是正常的白/粉皮肤，不是一块灰秃斑
 
 	// 头顶一层极淡的暖粉
-	float crown = smoothstep( 0.5, 0.95, n.y ) * smoothstep( ${f(head.c[1] - 0.6)}, ${f(head.c[1] - 0.1)}, p.y ) * ( 1.0 - smoothstep( 1.0, 1.7, p.z ) );
+	// 只在头顶（后枕以前）：不加这道 z 下限，整片背都会被这层暖粉罩成灰扑扑的，鞍背永远黑不下来
+	float crown = smoothstep( 0.5, 0.95, n.y ) * smoothstep( ${f(head.c[1] - 0.6)}, ${f(head.c[1] - 0.1)}, p.y ) * ( 1.0 - smoothstep( 1.0, 1.7, p.z ) ) * smoothstep( -0.3, 0.05, p.z );
 	col = mix( col, uColCrown, crown * 0.3 );
 
 	// 眼睑壳底下的体表是深色皮肤（露出来的只有眼圈以内，其余都被眼睑盖住）
@@ -84,16 +87,22 @@ vec3 plumage( vec3 p, vec3 n, float eyeD ) {
 	// 口腔：张嘴时从上下颌之间露出来的体表是深暗的口腔色（body.ts 已把这里的毛压到零）。
 	// 范围严格收在合拢时被上下颌盖住的颌根截面之内（半宽 0.10、上 0.09、下 -0.02，往外 0.03 渐隐）：
 	// 合拢时颌根四周露出的那一圈皮肤仍是浅色，张嘴时颌根之间露出来的才是暗的口腔。
-	// 头的前脸比嘴根还鼓出约 0.1 cm，所以沿喙轴不设下限、只设上限。
+	// 头的前脸比嘴根还鼓出约 0.1 cm，所以沿喙轴的上限之外，下限只到颌根稍后（-0.22~-0.08）：
+	// 不设下限这道圆柱会穿过脑壳从后枕钻出来，在背上剃出一块黑秃坑。
 	// 坐标系沿喙轴：bUp 垂直于喙轴向上，bAl 沿喙轴向前，原点在嘴根（都从 params 派生）
 	float bUp = ( p.y - ${f(beakBase[1])} ) * ${f(uy)} + ( p.z - ${f(beakBase[2])} ) * ${f(uz)};
 	float bAl = ( p.y - ${f(beakBase[1])} ) * ${f(dy)} + ( p.z - ${f(beakBase[2])} ) * ${f(dz)};
+	// 截面严格落在上下颌壳轮廓以内（和 body.ts 的压毛范围一致），合拢时嘴根两侧不露口腔色
 	float mouth =
-		( 1.0 - smoothstep( 0.10, 0.135, abs( p.x ) ) ) *
-		( 1.0 - smoothstep( 0.09, 0.12, bUp ) ) *
-		smoothstep( -0.05, -0.02, bUp ) *
-		( 1.0 - smoothstep( 0.14, 0.2, bAl ) );
-	col = mix( col, uColSkin * 0.45, mouth );
+		( 1.0 - smoothstep( 0.08, 0.11, abs( p.x ) ) ) *
+		( 1.0 - smoothstep( 0.07, 0.095, bUp ) ) *
+		smoothstep( -0.03, -0.01, bUp ) *
+		( 1.0 - smoothstep( 0.12, 0.17, bAl ) ) *
+		smoothstep( -0.22, -0.08, bAl );
+	// 颌根铰链后方那一小截合拢时露不出来、却盖不住的体表仍是深色皮肤（和嘴角阴影一致，不会在嘴根两侧漏红）；
+	// 只有上下颌之间真正露出来的口腔内部才是暗暖的珊瑚粉棕（线性色）
+	col = mix( col, uColSkin * 0.5, mouth );
+	col = mix( col, vec3( 0.26, 0.075, 0.055 ), mouth * smoothstep( -0.04, 0.04, bAl ) );
 
 	// 口角：从嘴角向后下方延伸进绒毛里的一道细微暗线
 	vec3 ga = vec3( ${f(GAPE_A[0])}, ${f(GAPE_A[1])}, ${f(GAPE_A[2])} );
