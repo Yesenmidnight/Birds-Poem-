@@ -40,7 +40,7 @@ npm run typecheck
 npm run build        # 三个入口一起打包到 dist/
 ```
 
-无头自检（需要本机 Chrome，`CHROME_PATH` 指到 chrome.exe；浏览器类脚本还要先 `npm i -D playwright-core` 和 `npm run dev`）：
+无头自检（需要本机 Chrome，`CHROME_PATH` 指到 chrome.exe；浏览器类脚本还要先 `npm run dev`）：
 
 ```bash
 node tools/sim.mjs                 # 纯数学仿真层：样条 / 碰撞 / 电线弹簧 / 步态 / 飞行 / 自动驾驶
