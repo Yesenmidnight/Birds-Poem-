@@ -7,6 +7,7 @@ import {
   Quaternion,
   Vector3,
   ShaderMaterial,
+  type IUniform,
 } from 'three';
 import { makeLitMaterial, rgb, type LightingUniforms } from '../glsl/lit';
 
@@ -153,9 +154,10 @@ vec3 wingSkinPoint( vec3 p, vec3 nrm, inout vec3 axis, out vec3 nOut ) {
 	if ( uOpen < 1e-5 ) return p;
 	float w = aRigA.w;
 	// 每片羽的展开进度略有先后（取羽根坐标的小数部分做每片羽固定的伪随机数；x 取绝对值，左右翅镜像一致）：
-	// 同一排羽不会在同一瞬间一起侧对视线，展开途中不再整排闪成一根根梳子齿。o = 0 恒等、o = 1 满展
+	// 同一排羽不会在同一瞬间一起侧对视线，展开途中不再整排闪成一根根梳子齿。o = 0 恒等、o = 1 满展。
+	// 错峰系数 0.06：以前 0.18 时半展（0.35）途中个别羽片慢半拍单独翘起
 	float r = fract( abs( aRigA.x ) * 13.73 + aRigA.y * 3.17 + aRigA.z * 7.31 );
-	float o = clamp( ( uOpen - 0.18 * r ) / ( 1.0 - 0.18 * r ), 0.0, 1.0 );
+	float o = clamp( ( uOpen - 0.06 * r ) / ( 1.0 - 0.06 * r ), 0.0, 1.0 );
 	p.x = mix( p.x, aMisc.x, smoothstep( 0.0, 0.5, o ) * w );
 	if ( w < 1e-4 ) return p;
 	vec3 rel = p - aRigA.xyz;
@@ -392,6 +394,31 @@ export function mirrorMatrix(m: Matrix4): Matrix4 {
   return out;
 }
 
+/**
+ * 尾羽扇开（羽片材质和投影深度材质共用）。静止时相邻两片只叠 0.09 cm，光靠绕羽根转会每对都露缝、中央一对各转一点中缝就裂开
+ * （原来权重 0.2 + 0.8·y 在 spread 1.0 时中央豁口 2 cm）。现在：
+ * - 转角 = uSpread · aFan.y（aFan.y = 第几对 0..1）：中央一对不转，中缝永远合着；
+ * - 相邻两片之间的夹角一拉开，两片各按夹角的一半补宽自己靠这条缝的那一翈（补宽量 = 离羽根的距离 × 半个夹角，羽轴不动、
+ *   边缘满额），叠瓦的搭接量和静止时一样，任何 spread 下都是连续的扇面而不是海胆刺。
+ * aFan.x = 左右侧 ±1，aFrag.x = 羽翈上离羽轴的位置（< 0 内翈、> 0 外翈），aPhy.y = 沿羽轴离羽根的距离（厘米）。
+ */
+const TAIL_FAN_GLSL = /* glsl */ `
+vec3 tailFanPoint( vec3 pos, inout vec3 nrm, inout vec3 axis ) {
+	float th = uSpread * aFan.y;
+	float thIn = uSpread * max( aFan.y - 0.2, 0.0 );
+	float thOut = uSpread * min( aFan.y + 0.2, 1.0 );
+	float open = 0.5 * ( aFrag.x < 0.0 ? th - thIn : thOut - th );
+	pos += normalize( vec3( axis.z, 0.0, -axis.x ) ) * ( -aFan.x * sign( aFrag.x ) * aPhy.y * open * abs( aFrag.x ) );
+	float fan = -th * aFan.x;
+	float fc = cos( fan );
+	float fs = sin( fan );
+	pos = vec3( pos.x * fc + pos.z * fs, pos.y, -pos.x * fs + pos.z * fc );
+	nrm = vec3( nrm.x * fc + nrm.z * fs, nrm.y, -nrm.x * fs + nrm.z * fc );
+	axis = vec3( axis.x * fc + axis.z * fs, axis.y, -axis.x * fs + axis.z * fc );
+	return pos;
+}
+`;
+
 const FEATHER_VERTEX_PARS = /* glsl */ `
 ${WING_SKIN_PARS}
 attribute vec3 aCol;
@@ -412,7 +439,7 @@ varying float vSoft;
 varying vec3 vAxisW;
 varying float vExp;
 varying float vKind;
-`;
+${TAIL_FAN_GLSL}`;
 
 const FEATHER_VERTEX_MAIN = /* glsl */ `
 	vFrag = aFrag;
@@ -427,13 +454,8 @@ const FEATHER_VERTEX_MAIN = /* glsl */ `
 	vec3 nOut;
 	pos = wingSkinPoint( pos, nrm, axis, nOut );
 	nrm = nOut;
-	// 几何原点就是羽根（尾基），直接绕局部 Y 轴转
-	float fan = -uSpread * aFan.x * ( 0.2 + 0.8 * aFan.y );
-	float fc = cos( fan );
-	float fs = sin( fan );
-	pos = vec3( pos.x * fc + pos.z * fs, pos.y, -pos.x * fs + pos.z * fc );
-	nrm = vec3( nrm.x * fc + nrm.z * fs, nrm.y, -nrm.x * fs + nrm.z * fc );
-	axis = vec3( axis.x * fc + axis.z * fs, axis.y, -axis.x * fs + axis.z * fc );
+	// 尾羽扇开：绕尾基的竖直轴转，越外侧转得越多；相邻两片拉开的夹角同时补进羽翈宽度（见 tailFanPoint）
+	pos = tailFanPoint( pos, nrm, axis );
 	vAxisW = normalize( mat3( modelMatrix ) * axis );
 `;
 
@@ -585,17 +607,22 @@ export function makeFeatherMaterial(lighting: LightingUniforms, rig: WingRigUnif
   });
 }
 
-/** 翅膀投影用的深度材质：和羽片材质同一套顶点变形，否则展开的翅投出去的还是收拢态的影子。 */
-export function makeWingDepthMaterial(rig: WingRigUniforms): ShaderMaterial {
+/** 翅膀 / 尾羽投影用的深度材质：和羽片材质同一套顶点变形（展翅 + 尾羽扇开），否则展开的翅、扇开的尾投出去的还是收拢态的影子。 */
+export function makeWingDepthMaterial(rig: WingRigUniforms, spread?: IUniform<number>): ShaderMaterial {
   return new ShaderMaterial({
-    uniforms: { uOpen: rig.uOpen },
+    uniforms: { uOpen: rig.uOpen, uSpread: spread ?? { value: 0 } },
     vertexShader: /* glsl */ `
 ${WING_SKIN_PARS}
 attribute vec3 aAxis;
+attribute vec2 aFan;
+attribute vec2 aPhy;
+uniform float uSpread;
+${TAIL_FAN_GLSL}
 void main() {
 	vec3 axis = aAxis;
 	vec3 nOut;
 	vec3 pos = wingSkinPoint( position, normal, axis, nOut );
+	pos = tailFanPoint( pos, nOut, axis );
 	gl_Position = projectionMatrix * modelViewMatrix * vec4( pos, 1.0 );
 }
 `,

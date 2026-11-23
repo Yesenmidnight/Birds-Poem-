@@ -9,11 +9,13 @@ import {
   Euler,
   type IUniform,
   type Object3D,
+  type PerspectiveCamera,
 } from 'three';
 import type { LightingUniforms } from '../glsl/lit';
 import { LONG_TAILED_TIT, type BodyParams } from './bodySdf';
 import { buildBody } from './body';
 import { FUR_DEFAULTS, Fur, makeFurArmDepth, type FurSettings } from './fur';
+import { FurLod } from './furLod';
 import { makeFeatherMaterial, makeWingDepthMaterial, type WingRigUniforms } from './feathers';
 import { WING_PIVOT, WingRig, buildTail, buildWing, buildWingArm, buildWingPanel, makeWingPanelMaterial, wingArmInward, wingArmSpan } from './wingTail';
 import {
@@ -21,7 +23,6 @@ import {
   LID_GAP_UPPER,
   buildEyeball,
   buildEyelid,
-  buildLegs,
   buildMandible,
   buildMouthCorners,
   buildNictitating,
@@ -34,17 +35,21 @@ import {
   makeNictMaterial,
   type Perch,
 } from './parts';
+import { LegRig, gripping, type FootState } from './legs';
 import { clamp, lerp, smoothstep } from '../util/math';
 import { type BodyPose, type Pose } from './motion/Pose';
 
 export type BirdPart = 'fur' | 'feathers' | 'beak' | 'eyes' | 'legs';
 
-/** 呼吸时胸腹绕这个中心微膨胀（腹部中心），绒毛、喙眼、翅尾一起被顶起，腿不动。 */
+/** 呼吸时胸腹绕这个中心微膨胀（腹部中心），绒毛、喙眼、翅尾一起被顶起。 */
 const BREATH_CENTER = new Vector3(0, 1.85, -0.5);
 /** 吸满气时的纵向膨胀比例。 */
 const BREATH_SCALE = 0.015;
-/** 躯干微姿态绕这个点转：双脚在枝上的抓握点，这样脚始终抓牢树枝、不悬空滑移。 */
-const BODY_PIVOT = new Vector3(0, 0, 0.05);
+/** 绒毛 LOD 量相机距离用的参考点：躯干中心（鸟局部坐标）。对着头拍特写时按它算才不会少画。 */
+const LOD_CENTER = new Vector3(0, 2.5, -0.6);
+const ZERO = new Vector3(0, 0, 0);
+/** 蓄力 / 落地缓冲时躯干最多下沉多少（厘米）：腿架把膝顶出去，脚仍钉在原处。 */
+const CROUCH_DROP = 0.2;
 
 /**
  * 眨眼：lidClose 为合拢程度 0..1（下睑上抬约 70%、上睑下压约 30%）；
@@ -104,7 +109,20 @@ export class Bird {
   // 呼吸空间：绒毛、喙眼、翅、尾都挂在这里，跟着胸腹一起微膨胀、跟着躯干微姿态一起绕抓握点转（腿不动）
   private readonly breathSpace = new Group();
   private breathAmount = 0;
+  /** 动态腿架和两只脚的状态（[右, 左]）。 */
+  private readonly legs!: LegRig;
+  private readonly feet: [FootState, FootState] = [gripping(), gripping()];
+  /** 腿架（调试面板读抓握中心、几何用）。 */
+  get legRig(): LegRig {
+    return this.legs;
+  }
   private readonly bodyEuler = new Euler();
+  /** 蹦跳层叠加到躯干上的量（阶段 3）：蓄力 / 缓冲的下沉 0..1、起跳 / 落地的前俯与侧倾（弧度）。 */
+  private hopCrouch = 0;
+  private hopPitch = 0;
+  private hopRoll = 0;
+  private readonly hopEuler = new Euler();
+  private readonly drop = new Matrix4();
   // 喙和眼是刚体，整组跟着头部骨骼的矩阵走
   private readonly headParts = new Group();
   private readonly jawUpper = new Group();
@@ -139,6 +157,12 @@ export class Bird {
   private readonly rot = new Matrix4();
   private readonly quat = new Quaternion();
   private readonly euler = new Euler();
+  /** 绒毛壳层数的自动 LOD：开关、锚点和补偿量都在这里，由宿主每帧调 updateFurLod 推进。 */
+  readonly furLod = new FurLod();
+  /** 自动 LOD 关闭时生效的手动壳层数。 */
+  private manualFurShells = 96;
+  private furLodOn = false;
+  private readonly lodCenter = new Vector3();
 
   constructor(lighting: LightingUniforms, perch: Perch, params: BodyParams = LONG_TAILED_TIT) {
     this.params = params;
@@ -150,6 +174,7 @@ export class Bird {
     const body = buildBody(params);
     this.bodyGeometry = body.geometry;
     this.fur = new Fur(body.geometry, lighting);
+    this.manualFurShells = this.fur.shellCount;
     this.breathSpace.matrixAutoUpdate = false;
 
     // ---------- 双翅与尾：各自一个枢轴 ----------
@@ -187,6 +212,8 @@ export class Bird {
     const tailMesh = new Mesh(tail.geometry, tailMat);
     tailMesh.castShadow = true;
     tailMesh.receiveShadow = true;
+    // 尾羽的影子走同一套扇开变形（和翅羽共用一个深度材质，uSpread 接到尾羽材质的那份 uniform 上）
+    tailMesh.customDepthMaterial = makeWingDepthMaterial(tailRig, tailMat.uniforms.uSpread);
     this.tailPivot.position.set(params.tailBase[0], params.tailBase[1], params.tailBase[2]);
     this.tailPivot.add(tailMesh);
     this.breathSpace.add(this.tailPivot);
@@ -245,10 +272,12 @@ export class Bird {
     }
     this.headParts.matrixAutoUpdate = false;
 
-    // 落在枝上：沿枝条站立，面朝 -X。先定好朝向，腿脚再按它的逆矩阵从世界坐标转回局部
+    // 落在枝上：沿枝条站立，面朝 -X。先定好朝向，腿架再按它的逆矩阵把栖枝上的落点转回局部坐标
     this.group.rotation.y = -Math.PI / 2;
     this.group.updateMatrix();
-    const legs = new Mesh(buildLegs(perch, this.group.matrix.clone().invert()), makeLegMaterial(lighting));
+    // 动态腿架（阶段 2）：静止栖息态就是原来的静态腿，躯干动时跗跖按两段链反向运动学跟着髋走、脚始终抓牢
+    this.legs = new LegRig(perch, this.group.matrix.clone().invert());
+    const legs = new Mesh(this.legs.geometry, makeLegMaterial(lighting));
     legs.castShadow = true;
     legs.receiveShadow = true;
 
@@ -311,7 +340,7 @@ export class Bird {
   }
 
   /**
-   * 躯干微姿态（弧度）：整副身体绕脚踝抓握点前俯 / 顺扭 / 侧倾，腿不跟着动，双脚始终抓牢树枝。
+   * 躯干微姿态（弧度）：整副身体绕双脚抓握点的中点前俯 / 顺扭 / 侧倾，脚始终抓牢树枝，跗跖由腿架跟着髋调。
    * 大角度转头时身体顺着方向慢半拍跟一点，甩尾弹翅时前俯反冲再回稳。
    */
   setBodyPose(pose: BodyPose): void {
@@ -319,18 +348,39 @@ export class Bird {
     this.updateBodySpace();
   }
 
-  /** 呼吸缩放 × 躯干微姿态合成到呼吸空间的矩阵上：先绕腹中心膨胀，再绕抓握点转。 */
+  /** 一只脚的状态（包握 / 张开 / 抬起）。改了立刻重算腿。 */
+  setFootPose(side: 'right' | 'left', state: FootState): void {
+    this.feet[side === 'right' ? 0 : 1] = state;
+    this.updateBodySpace();
+  }
+
+  /**
+   * 蹦跳层叠加到躯干上的量：crouch 让整副身体沿局部 -Y 下沉（最多 CROUCH_DROP 厘米，脚钉着、腿架把膝顶出去），
+   * pitch / roll 在动作系统的躯干微姿态之外再加一点（起跳仰身、落地前俯）。调用方每帧给全三个值。
+   */
+  setHopPose(crouch: number, pitch: number, roll: number): void {
+    this.hopCrouch = clamp(crouch, 0, 1.5);
+    this.hopPitch = pitch;
+    this.hopRoll = roll;
+    this.updateBodySpace();
+  }
+
+  /** 呼吸缩放 × 躯干微姿态 × 蹦跳下沉合成到呼吸空间的矩阵上：先绕腹中心膨胀，再绕抓握点转，最后沿局部竖直下沉；腿架按同一个矩阵更新跗跖。 */
   private updateBodySpace(): void {
     const s = BREATH_SCALE * clamp(this.breathAmount, 0, 1.5);
     const m = this.breathSpace.matrix;
     m.makeScale(1 + 0.6 * s, 1 + s, 1 + 0.3 * s);
     m.setPosition(BREATH_CENTER.x * -0.6 * s, BREATH_CENTER.y * -s, BREATH_CENTER.z * -0.3 * s);
-    this.quat.setFromEuler(this.bodyEuler);
+    const pivot = this.legs?.gripCenter ?? ZERO;
+    this.hopEuler.set(this.bodyEuler.x + this.hopPitch, this.bodyEuler.y, this.bodyEuler.z + this.hopRoll, 'YXZ');
+    this.quat.setFromEuler(this.hopEuler);
     this.rot.makeRotationFromQuaternion(this.quat);
-    this.rot.setPosition(BODY_PIVOT.x, BODY_PIVOT.y, BODY_PIVOT.z);
-    this.rot.multiply(this.shift.makeTranslation(-BODY_PIVOT.x, -BODY_PIVOT.y, -BODY_PIVOT.z));
+    this.rot.setPosition(pivot.x, pivot.y, pivot.z);
+    this.rot.multiply(this.shift.makeTranslation(-pivot.x, -pivot.y, -pivot.z));
     m.premultiply(this.rot);
+    if (this.hopCrouch > 0) m.premultiply(this.drop.makeTranslation(0, -CROUCH_DROP * this.hopCrouch, 0));
     this.breathSpace.matrixWorldNeedsUpdate = true;
+    this.legs?.update(m, this.feet);
   }
 
   /** 把动作系统叠加好的姿态一次性应用到头颈、眼睑、喙、双翅、尾、呼吸和躯干。 */
@@ -427,6 +477,36 @@ export class Bird {
   /** 绒毛参数的 uniform，调试面板直接改。 */
   get furUniforms(): Record<string, IUniform> {
     return this.fur.uniforms;
+  }
+
+  /** 手动设置绒毛壳层数（自动 LOD 开启时以 LOD 为准，关掉后还原成这里的值）。 */
+  setFurShells(n: number): void {
+    this.manualFurShells = n;
+    if (!this.furLod.enabled) this.fur.setShellCount(n);
+  }
+
+  /**
+   * 绒毛自动 LOD：按相机到鸟的距离、视场角和视口高度算出鸟所在处的像素密度（厘米 / 像素），
+   * 每帧渲染前推进一次。近景（等效距离 ≤ 14 cm）恒为满层数，补偿量恒为 1，观感与不开 LOD 逐像素一致；
+   * 拉远后壳层数平滑降下来（判据与曲线见 furLod.ts）。viewHeight 是画布的设备像素高度。
+   */
+  updateFurLod(camera: PerspectiveCamera, viewHeight: number, dt: number): void {
+    const lod = this.furLod;
+    const u = this.fur.uniforms;
+    if (lod.enabled) {
+      const dist = camera.position.distanceTo(this.group.localToWorld(this.lodCenter.copy(LOD_CENTER)));
+      const pixel = ((2 * dist * Math.tan((camera.fov * Math.PI) / 360)) / camera.zoom) / Math.max(viewHeight, 1);
+      lod.update(pixel, dt);
+      if (lod.shells !== this.fur.shellCount) this.fur.setShellCount(lod.shells);
+      u.uLodLen.value = 1 + lod.lenBoost * lod.low;
+      u.uLodDensity.value = 1 + lod.densityBias * lod.low;
+      this.furLodOn = true;
+    } else if (this.furLodOn) {
+      this.fur.setShellCount(this.manualFurShells);
+      u.uLodLen.value = 1;
+      u.uLodDensity.value = 1;
+      this.furLodOn = false;
+    }
   }
 
   update(dt: number): void {

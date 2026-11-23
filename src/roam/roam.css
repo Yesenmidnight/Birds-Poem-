@@ -1,0 +1,45 @@
+/* 城市漫游入口自己的样式；通用布局与面板沿用 ../style.css */
+
+.hud {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  padding: 10px 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: rgba(16, 18, 22, 0.62);
+  color: var(--fg);
+  font-family: 'Cascadia Mono', Consolas, 'SF Mono', monospace;
+  font-size: 12px;
+  line-height: 1.6;
+  white-space: pre;
+  pointer-events: none;
+  backdrop-filter: blur(10px);
+}
+
+.hud.is-hidden {
+  display: none;
+}
+
+.hud__title {
+  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.hud__sub {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* 自动 LOD 开着时手动壳层数不生效，整行压暗提示 */
+.is-locked {
+  opacity: 0.45;
+}
+
+/* 共享面板的滑块行会横向溢出（滑块的固有宽度撑大了 .row__ctl 的最小内容宽度，右端的数值被裁掉）。
+   这里只给漫游入口修：允许控件区收缩，滑块自己会跟着缩短 */
+.panel .row__ctl {
+  min-width: 0;
+}

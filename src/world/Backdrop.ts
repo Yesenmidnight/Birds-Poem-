@@ -21,15 +21,22 @@ export class Backdrop {
     base.setAttribute('position', new Float32BufferAttribute([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0], 3));
     base.setIndex([0, 1, 2, 0, 2, 3]);
 
-    // 调色：深色枝影、灰褐、雪白、冷光、少量暖色光斑
-    const palette: { c: Color; a: [number, number]; w: number }[] = [
-      { c: new Color('#1d1b18'), a: [0.3, 0.55], w: 38 },
-      { c: new Color('#45403b'), a: [0.24, 0.42], w: 28 },
-      { c: new Color('#dcd9d2'), a: [0.22, 0.42], w: 12 },
-      { c: new Color('#8f9bab'), a: [0.22, 0.42], w: 16 },
-      { c: new Color('#e8d2a8'), a: [0.14, 0.3], w: 6 },
+    // 调色：地平线以上（长焦浅景深里的雪林天空）以浅冷雾白、淡冰蓝、微暖晨光为主，深色只用极淡的远山雾灰褐——
+    // 以前 38% 权重的 #1d1b18 小色斑在浅灰天空里成了孤立的黑色脏斑；地平线以下压暗一点，俯视时充当雪地与灌丛的虚影
+    type Entry = { c: Color; a: [number, number]; w: number };
+    const sky: Entry[] = [
+      { c: new Color('#dce2e9'), a: [0.2, 0.4], w: 40 },
+      { c: new Color('#aeb9c7'), a: [0.16, 0.32], w: 28 },
+      { c: new Color('#e8dfd2'), a: [0.14, 0.3], w: 18 },
+      { c: new Color('#6d7580'), a: [0.06, 0.13], w: 14 },
     ];
-    const total = palette.reduce((s, p) => s + p.w, 0);
+    const ground: Entry[] = [
+      { c: new Color('#45403b'), a: [0.24, 0.42], w: 34 },
+      { c: new Color('#dcd9d2'), a: [0.22, 0.42], w: 30 },
+      { c: new Color('#8f9bab'), a: [0.22, 0.42], w: 26 },
+      { c: new Color('#e8d2a8'), a: [0.14, 0.3], w: 10 },
+    ];
+    const totalOf = (list: Entry[]): number => list.reduce((sum, p) => sum + p.w, 0);
 
     const center = new Float32Array(count * 3);
     const size = new Float32Array(count * 2);
@@ -43,10 +50,13 @@ export class Backdrop {
       const y = rng() < 0.62 ? lerp(-28, 62, rng()) : lerp(-80, -24, rng());
       center.set([Math.sin(az) * dist, y, Math.cos(az) * dist], i * 3);
 
-      const w = 5 + 24 * Math.pow(rng(), 1.4);
+      const above = y > -8;
+      // 天空里的色斑大而化开（长焦焦外），地上的小一些
+      const w = above ? 18 + 34 * Math.pow(rng(), 1.2) : 6 + 22 * Math.pow(rng(), 1.4);
       size.set([w, w * (0.45 + 1.9 * rng())], i * 2);
 
-      let pick = rng() * total;
+      const palette = above ? sky : ground;
+      let pick = rng() * totalOf(palette);
       let entry = palette[0];
       for (const p of palette) {
         pick -= p.w;
@@ -67,6 +77,7 @@ export class Backdrop {
     const material = new ShaderMaterial({
       transparent: true,
       depthWrite: false,
+      uniforms: { uFade: { value: 1 } },
       vertexShader: /* glsl */ `
 attribute vec3 aCenter;
 attribute vec2 aSize;
@@ -88,9 +99,11 @@ void main() {
 varying vec2 vUv;
 varying vec3 vColor;
 varying vec2 vMisc;
+// 相机拉远（看整棵树）时整圈色斑淡出：它们是给微距机位配的浅景深，拉到圈外就成了悬在半空的脏斑
+uniform float uFade;
 void main() {
 	float r = length( vUv );
-	float a = ( 1.0 - smoothstep( 1.0 - vMisc.x, 1.0, r ) ) * vMisc.y;
+	float a = ( 1.0 - smoothstep( 1.0 - vMisc.x, 1.0, r ) ) * vMisc.y * uFade;
 	if ( a < 0.003 ) discard;
 	// 真实焦外光斑边缘略亮
 	float rim = ( smoothstep( 1.0 - vMisc.x, 0.72, r ) - smoothstep( 0.86, 1.0, r ) ) * 0.18;

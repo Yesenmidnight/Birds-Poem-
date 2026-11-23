@@ -75,11 +75,18 @@ struct Surf {
 };
 
 float sunShadow() {
+#ifdef NO_RECEIVE_SHADOW
+	// makeLitMaterial({ receiveShadow: false }) 的材质不取样阴影贴图。three 对 lights: true 的自定义 ShaderMaterial
+	// 只按"场景里有投影灯"注入 USE_SHADOWMAP，不看你给 mesh.receiveShadow 设的 false（内置材质靠 uniform bool receiveShadow
+	// 在 lights_fragment_begin 里判，我们这份 sunShadow 没有那一层）——前景海棠果肩上的黑锅盖就是这么来的
+	return 1.0;
+#else
 #if defined( USE_SHADOWMAP ) && NUM_DIR_LIGHT_SHADOWS > 0
 	DirectionalLightShadow s = directionalLightShadows[ 0 ];
 	return getShadow( directionalShadowMap[ 0 ], s.shadowMapSize, s.shadowIntensity, s.shadowBias, s.shadowRadius, vDirectionalShadowCoord[ 0 ] );
 #else
 	return 1.0;
+#endif
 #endif
 }
 
@@ -100,8 +107,8 @@ vec3 shadeLit( vec3 N, vec3 V, Surf s ) {
 }
 `;
 
-/** 片元着色器公共主函数：调用方提供 `Surf surface( vec3 N, vec3 V )`。 */
-const LIT_FRAGMENT_MAIN = /* glsl */ `
+/** 片元着色器公共主函数：调用方提供 `Surf surface( vec3 N, vec3 V )`；bumpMain 是程序化凹凸段（没有凹凸的材质传空串，源码逐字节不变）。 */
+const LIT_FRAGMENT_MAIN = (bumpMain: string): string => /* glsl */ `
 void main() {
 	vec3 N = normalize( vWorldN );
 	#ifdef FLIP_BACKFACE
@@ -111,7 +118,7 @@ void main() {
 	Surf s = surface( N, V );
 	#ifdef USE_ALPHA
 		if ( s.alpha < 0.02 ) discard;
-	#endif
+	#endif${bumpMain}
 	vec3 col = shadeLit( N, V, s );
 	#ifdef EXTRA_LIGHT
 		col += extraLight( N, V, s );
@@ -120,6 +127,27 @@ void main() {
 	#include <tonemapping_fragment>
 	#include <colorspace_fragment>
 }
+`;
+
+/**
+ * 程序化凹凸（零贴图）：调用方给 `float bumpHeight( vec3 p, vec3 N )`（世界空间高度，cm），这里用 dFdx / dFdy 把它转成
+ * 受光法线的扰动（Mikkelsen 2008 的无参数表面凹凸，和 three 的 perturbNormalArb 同一推导）。
+ * 屏幕像素的足迹比特征尺寸大时淡出：远处的细凹凸只会闪成麻点。
+ */
+const LIT_BUMP_MAIN = /* glsl */ `
+
+	{
+		float bh = bumpHeight( vWorldPos, N ) * BUMP_SCALE;
+		vec3 sX = dFdx( vWorldPos );
+		vec3 sY = dFdy( vWorldPos );
+		vec3 r1 = cross( sY, N );
+		vec3 r2 = cross( N, sX );
+		float det = dot( sX, r1 ) * ( gl_FrontFacing ? 1.0 : -1.0 );
+		float footprint = length( sX ) + length( sY );
+		float fade = 1.0 - smoothstep( 0.25, 1.0, footprint / BUMP_FEATURE );
+		vec3 grad = sign( det ) * ( dFdx( bh ) * r1 + dFdy( bh ) * r2 ) * fade;
+		N = normalize( abs( det ) * N - grad );
+	}
 `;
 
 export interface LitMaterialOptions {
@@ -136,10 +164,17 @@ export interface LitMaterialOptions {
   uniforms?: Record<string, IUniform>;
   lighting: LightingUniforms;
   defines?: Record<string, string>;
+  /** 不接收阴影贴图（默认 true，现有材质逐位不变）：前景海棠果这类不能被鸟尾 / 树枝的硬阴影盖住的小物件用。 */
+  receiveShadow?: boolean;
   side?: Side;
   alphaToCoverage?: boolean;
   transparent?: boolean;
   depthWrite?: boolean;
+  /**
+   * 可选的程序化凹凸（零贴图）：`float bumpHeight( vec3 p, vec3 N )` 的函数体，返回世界空间高度（cm）；
+   * dFdx / dFdy 把它转成受光法线的扰动。不传 = 着色器源码逐字节不变（小鸟 / 观鸟树枝材质零影响）。
+   */
+  bump?: { height: string; scale?: number; feature?: number };
 }
 
 /** 造一个带光照与阴影的自定义材质。 */
@@ -148,6 +183,13 @@ export function makeLitMaterial(opts: LitMaterialOptions): ShaderMaterial {
   if (opts.side === DoubleSide) defines.FLIP_BACKFACE = '';
   if (opts.alphaToCoverage) defines.USE_ALPHA = '';
   if (opts.extraLight) defines.EXTRA_LIGHT = '';
+  if (opts.receiveShadow === false) defines.NO_RECEIVE_SHADOW = '';
+  if (opts.bump) {
+    defines.BUMP_SCALE = (opts.bump.scale ?? 1).toFixed(3);
+    defines.BUMP_FEATURE = (opts.bump.feature ?? 4).toFixed(2);
+  }
+  const bumpMain = opts.bump ? LIT_BUMP_MAIN : '';
+  const bumpDecl = opts.bump ? `float bumpHeight( vec3 p, vec3 N ) {\n${opts.bump.height}\n}\n` : '';
 
   const merged = UniformsUtils.merge([
     UniformsLib.lights,
@@ -178,10 +220,10 @@ ${LIT_VERTEX_TAIL}}
 `,
     fragmentShader: `${LIT_FRAGMENT_PARS}${opts.fragmentPars ?? ''}
 ${opts.extraLight ? `vec3 extraLight( vec3 N, vec3 V, Surf s ) {\n${opts.extraLight}\n}\n` : ''}
-Surf surface( vec3 N, vec3 V ) {
+${bumpDecl}Surf surface( vec3 N, vec3 V ) {
 ${opts.surface}
 }
-${LIT_FRAGMENT_MAIN}
+${LIT_FRAGMENT_MAIN(bumpMain)}
 `,
     uniforms: merged,
     defines,

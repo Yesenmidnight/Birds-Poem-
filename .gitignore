@@ -6,3 +6,5 @@ tools/bin
 *.local
 .DS_Store
 Thumbs.db
+# 音乐母带（WAV，每首 35 MB）：audio/master/ 下的不进 git，网页用的 public/audio/*.mp3 进
+audio/master

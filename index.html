@@ -3,10 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
-    <title>北长尾山雀 · 程序化观鸟</title>
+    <title>北长尾山雀 · 雪精灵的冬日庭院</title>
+    <!-- 项目没有 favicon，显式指到空 data 地址，免得每次加载都报一条 404 -->
+    <link rel="icon" href="data:," />
+    <!-- 样式表是 JS 模块注入的（开发态要等模块图执行完）：在它到位之前先按住底色，不闪白 -->
+    <style>
+      body {
+        background: #0d0f12;
+      }
+    </style>
   </head>
   <body>
+    <!-- 合流后的完整体验：进场微距观鸟（浅景深 + 右侧观鸟面板），点「展翅漫游小院 ➔」一镜到底进小院漫游飞行（面板 / 按钮 / HUD 由 src/courtyard/main.ts 建） -->
     <div id="app"></div>
-    <script type="module" src="/src/main.ts"></script>
+    <script type="module" src="/src/courtyard/main.ts"></script>
   </body>
 </html>

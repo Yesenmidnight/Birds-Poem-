@@ -2,6 +2,7 @@ import { Quaternion, Vector3 } from 'three';
 import { makeRng } from '../../util/math';
 import { DEG } from './curves';
 import { BlinkLayer, BreathLayer, FidgetLayer, GazeLayer, SpreadLayer, SwayLayer, type MotionContext, type MotionEvents, type MotionLayer } from './layers';
+import { HopLayer } from './hopLayer';
 import { resetPose, restPose, type Pose } from './Pose';
 
 /** 每帧由 App 提供的外部环境。 */
@@ -13,7 +14,7 @@ export interface MotionFrame {
   gazeWorld: Vector3 | null;
 }
 
-export type MotionCue = 'saccade' | 'tilt' | 'blink' | 'nict' | 'tailFlick' | 'wingFlick' | 'spread';
+export type MotionCue = 'saccade' | 'tilt' | 'blink' | 'nict' | 'tailFlick' | 'wingFlick' | 'spread' | 'hop' | 'turnHop';
 
 /**
  * 微生命动作系统：呼吸、跳视/歪头、眨眼/瞬膜、甩尾/弹翅、扭身各自是一个独立的层，
@@ -36,6 +37,8 @@ export class MotionController {
   readonly fidget = new FidgetLayer();
   readonly spread = new SpreadLayer();
   readonly sway = new SwayLayer();
+  /** 枝头蹦跳（预蹲 / 腾空 / 落枝）：姿态贡献写进 Pose，鸟根 / 腿架 / 树枝冲击通过 HopHost 交给入口。 */
+  readonly hop = new HopLayer();
 
   private readonly layers: MotionLayer[];
   private readonly rng = makeRng(20261122);
@@ -50,8 +53,8 @@ export class MotionController {
   };
 
   constructor() {
-    // 扭身层放在最后：它读这一帧已经叠加好的头部转角和甩尾/弹翅事件
-    this.layers = [this.breath, this.gaze, this.blink, this.fidget, this.spread, this.sway];
+    // 扭身层放在最后：它读这一帧已经叠加好的头部转角和甩尾/弹翅事件；蹦跳层在它前面（落地甩尾的反冲由扭身层做）
+    this.layers = [this.breath, this.gaze, this.blink, this.fidget, this.spread, this.hop, this.sway];
   }
 
   /** 每帧调用：推进时间并重新叠加出这一帧的 Pose。 */
@@ -98,6 +101,12 @@ export class MotionController {
         break;
       case 'spread':
         this.spread.cue();
+        break;
+      case 'hop':
+        this.hop.cue('hop');
+        break;
+      case 'turnHop':
+        this.hop.cue('turnHop');
         break;
     }
   }

@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>雪精灵的冬日庭院 · 一镜到底</title>
+    <!-- 项目没有 favicon，显式指到空 data 地址，免得每次加载都报一条 404 -->
+    <link rel="icon" href="data:," />
+    <!-- 样式表是 JS 模块注入的（开发态要等模块图执行完）：在它到位之前先按住底色，不闪白 -->
+    <style>
+      body {
+        background: #0d0f12;
+      }
+    </style>
+  </head>
+  <body>
+    <!-- 兼容直达：和 index.html 是同一个应用（?play=1 直接漫游） -->
+    <div id="app"></div>
+    <script type="module" src="/src/courtyard/main.ts"></script>
+  </body>
+</html>

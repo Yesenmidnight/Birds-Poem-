@@ -1,0 +1,257 @@
+/* 冬日庭院（合流入口）自己的样式：观鸟面板的控件样式来自共享 style.css（.panel / .btn / .row / .seg / .stat），这里只放庭院的两态外壳
+   （底部主按钮 / 右上角返回按钮 / 左上角 HUD / 操作提示条）和进场淡入。 */
+html,
+body {
+  margin: 0;
+  height: 100%;
+  overflow: hidden;
+  background: #0d0f12;
+  font-family: 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+}
+
+#app {
+  position: fixed;
+  inset: 0;
+  /* 进场：场景第一帧画出来后（main.ts 两帧之后给 body 加 is-ready）整屏从底色里淡入 */
+  opacity: 0;
+}
+
+body.is-ready #app {
+  opacity: 1;
+  transition: opacity 0.45s ease;
+}
+
+#app canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+  cursor: grab;
+}
+
+#app canvas:active {
+  cursor: grabbing;
+}
+
+/* ───────── 右侧观鸟面板：观鸟态在；漫游态整块滑出画面右侧（0.4 s），回来时再滑进来 ───────── */
+.panel {
+  transition: transform 0.45s cubic-bezier(0.2, 0.8, 0.2, 1), opacity 0.3s ease;
+}
+
+body.is-roam .panel {
+  transform: translateX(calc(100% + 24px));
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* 面板的滑块行：控件容器允许缩到比内容窄（不然 range 的固有宽度把数值挤出面板右缘被裁掉） */
+.row__ctl {
+  min-width: 0;
+}
+
+/* ───────── 左上角 HUD（漫游态显示）：观鸟态整块淡出，统计照常刷新 ───────── */
+.garden-hud {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  padding: 10px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 12px;
+  background: rgba(16, 18, 22, 0.62);
+  color: #ece8e0;
+  font-size: 12px;
+  line-height: 1.6;
+  pointer-events: none;
+  backdrop-filter: blur(10px);
+  white-space: pre;
+  opacity: 0;
+  transform: translateY(-6px);
+  transition: opacity 0.35s ease, transform 0.45s cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+
+body.is-roam .garden-hud {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.garden-hud__title {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.garden-hud__sub {
+  color: #a7a29a;
+  font-size: 11px;
+}
+
+.garden-hud__view {
+  color: #e8a79f;
+  margin-top: 4px;
+}
+
+.garden-hud__stats {
+  color: #a7a29a;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ───────── 底部主按钮「展翅漫游小院 ➔」（观鸟态，画面底部正中、离小鸟爪尖留足透气间距） ─────────
+   深色毛玻璃药丸 + 一道斜向白色高光（雪地背景偏亮，白字才读得清）；场景第一帧画出来后跟着 #app 一起淡入；
+   点下去进漫游态：0.25 s 淡出下沉；?ui=0 截图时不建 */
+.garden-cta {
+  position: absolute;
+  left: 50%;
+  bottom: 18px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 11px 20px 11px 24px;
+  border: 1px solid rgba(255, 255, 255, 0.24);
+  border-radius: 999px;
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.18) 0%, rgba(255, 255, 255, 0.05) 100%), rgba(20, 22, 26, 0.42);
+  box-shadow: 0 10px 32px rgba(0, 0, 0, 0.2), inset 0 1px 0 rgba(255, 255, 255, 0.22);
+  backdrop-filter: blur(14px) saturate(1.35);
+  -webkit-backdrop-filter: blur(14px) saturate(1.35);
+  color: #ece8e0;
+  font: inherit;
+  font-size: 13.5px;
+  font-weight: 500;
+  letter-spacing: 0.1em;
+  white-space: nowrap;
+  cursor: pointer;
+  opacity: 0;
+  transform: translate(-50%, 10px);
+  pointer-events: none;
+}
+
+/* transition 放在这里而不是上面：样式表是 JS 注入的，写在上面的话注入那一刻 opacity 会从无样式的 1 慢慢降到 0，
+   is-ready 来的时候还没降完，冷加载就成了"直接出现"而不是淡入 */
+body.is-ready .garden-cta {
+  opacity: 1;
+  transform: translate(-50%, 0);
+  pointer-events: auto;
+  transition: opacity 0.45s ease 0.25s, transform 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) 0.25s, border-color 0.2s ease, background 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+body.is-roam .garden-cta {
+  opacity: 0;
+  transform: translate(-50%, 10px);
+  pointer-events: none;
+  transition: opacity 0.25s ease, transform 0.25s ease;
+}
+
+.garden-cta:hover {
+  border-color: rgba(232, 167, 159, 0.55);
+  background: linear-gradient(135deg, rgba(255, 255, 255, 0.24) 0%, rgba(232, 167, 159, 0.12) 100%), rgba(28, 26, 30, 0.5);
+  box-shadow: 0 14px 38px rgba(0, 0, 0, 0.24), 0 0 0 1px rgba(232, 167, 159, 0.12), inset 0 1px 0 rgba(255, 255, 255, 0.28);
+}
+
+body.is-ready .garden-cta:active {
+  transform: translate(-50%, 1px) scale(0.985);
+}
+
+.garden-cta__arrow {
+  color: #e8a79f;
+  font-size: 15px;
+  line-height: 1;
+  transition: transform 0.25s ease;
+}
+
+.garden-cta:hover .garden-cta__arrow {
+  transform: translateX(4px);
+}
+
+/* ───────── 返回观鸟（右上角毛玻璃药丸，漫游态才出现） ───────── */
+.garden-back {
+  position: absolute;
+  top: 16px;
+  right: 16px;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 16px 9px 14px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-radius: 999px;
+  /* 雪地 / 砖墙都偏亮：垫一层深色毛玻璃，白字才读得清 */
+  background: rgba(16, 18, 22, 0.5);
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.18), inset 0 1px 0 rgba(255, 255, 255, 0.12);
+  backdrop-filter: blur(12px) saturate(1.3);
+  -webkit-backdrop-filter: blur(12px) saturate(1.3);
+  color: #ece8e0;
+  font: inherit;
+  font-size: 12.5px;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  cursor: pointer;
+  opacity: 0;
+  transform: translateY(-6px);
+  pointer-events: none;
+  transition: opacity 0.35s ease 0.15s, transform 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) 0.15s, background 0.2s ease, border-color 0.2s ease;
+}
+
+body.is-roam .garden-back {
+  opacity: 1;
+  transform: translateY(0);
+  pointer-events: auto;
+}
+
+.garden-back:hover {
+  border-color: rgba(232, 167, 159, 0.5);
+  background: rgba(34, 28, 30, 0.6);
+}
+
+.garden-back:active {
+  transform: scale(0.985);
+}
+
+.garden-back__arrow {
+  color: #e8a79f;
+  font-size: 14px;
+  line-height: 1;
+  transition: transform 0.25s ease;
+}
+
+.garden-back:hover .garden-back__arrow {
+  transform: translateX(-3px);
+}
+
+/* ───────── 底部操作提示条（漫游态常驻）：深色毛玻璃药丸，窄屏自动换行 ───────── */
+.garden-help {
+  position: absolute;
+  left: 50%;
+  bottom: 24px;
+  transform: translate(-50%, 10px);
+  /* 绝对定位的 shrink-to-fit 只能拿到 left 之后的半边宽，要显式 max-content 才一行铺满、超宽了才折行 */
+  width: max-content;
+  max-width: min(94vw, 1120px);
+  box-sizing: border-box;
+  padding: 8px 20px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  background: rgba(16, 18, 22, 0.46);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: rgba(236, 232, 224, 0.78);
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  line-height: 1.6;
+  text-align: center;
+  text-wrap: balance;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.35s ease 0.2s, transform 0.45s cubic-bezier(0.2, 0.8, 0.2, 1) 0.2s;
+}
+
+body.is-roam .garden-help {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+@media (max-width: 1000px) {
+  .garden-help {
+    border-radius: 16px;
+  }
+}

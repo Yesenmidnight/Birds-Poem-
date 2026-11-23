@@ -76,6 +76,8 @@ uniform float uJawOpen;
 attribute float aLayer;
 uniform mat4 uBones[2];
 uniform float uShellCount;
+// 壳层自动 LOD 的补偿量（Bird.updateFurLod 每帧写）：近景恒为 1，乘出来逐位不变
+uniform float uLodLen;
 uniform float uFurLen;
 uniform float uFluff;
 uniform float uClump;
@@ -123,7 +125,7 @@ const FUR_VERTEX_MAIN = /* glsl */ `
 	float furK = mix( aParam.x, aPress, smoothstep( 0.25, 0.7, wingOpen ) );
 	// 张嘴 0.04~0.2 rad 之间，嘴根周围一圈的毛压到 0.3；合拢态（uJawOpen = 0）逐位不变
 	furK = mix( furK, min( furK, 0.3 ), aJaw * smoothstep( 0.04, 0.2, uJawOpen ) );
-	float len = uFurLen * furK * ( 0.72 + 0.56 * clumpAmt ) * mix( 0.78, 1.32, uFluff );
+	float len = uFurLen * uLodLen * furK * ( 0.72 + 0.56 * clumpAmt ) * mix( 0.78, 1.32, uFluff );
 	// 毛长的细碎起伏同样是空间连续的低频噪声
 	len *= 0.82 + 0.36 * ( snoise( position * 5.0 + 3.1 ) * 0.5 + 0.5 );
 
@@ -196,6 +198,7 @@ ${PLUMAGE_PARS}
 uniform float uTuftScale;
 uniform float uStretch;
 uniform float uDensity;
+uniform float uLodDensity;
 uniform float uSheen;
 uniform float uTranslucency;
 varying vec3 vRestPos;
@@ -219,7 +222,7 @@ const FUR_SURFACE = /* glsl */ `
 		float d1 = fbm3( q * uTuftScale );
 		float d2 = snoise( q * uTuftScale * 2.7 + 41.0 ) * 0.5 + 0.5;
 		float dens = d1 * 0.68 + d2 * 0.32;
-		float thr = mix( 0.3, 0.8, pow( vT, 0.8 ) ) * uDensity;
+		float thr = mix( 0.3, 0.8, pow( vT, 0.8 ) ) * uDensity * uLodDensity;
 		float cov = dens - thr;
 		float aa = fwidth( cov ) + 1e-5;
 		float alpha = clamp( cov / aa + 0.5, 0.0, 1.0 );
@@ -373,6 +376,8 @@ export class Fur {
 
     this.uniforms = {
       uShellCount: { value: settings.shellCount },
+      uLodLen: { value: 1 },
+      uLodDensity: { value: 1 },
       uFurLen: { value: settings.furLen },
       uFluff: { value: settings.fluff },
       uClump: { value: settings.clump },

@@ -103,6 +103,21 @@ export class Panel {
     return b;
   }
 
+  /**
+   * 跳到别的入口的链接式按钮（真 a 标签：中键 / Ctrl 点击照常可用）。data-fade 交给入口的 main.ts 做淡出过渡再跳转。
+   * className 默认和普通按钮一样，主入口传 'btn btn--cta'。
+   */
+  link(parent: HTMLElement, label: string, href: string, className = 'btn', hint?: string): HTMLAnchorElement {
+    const a = document.createElement('a');
+    a.className = className;
+    a.href = href;
+    a.textContent = label;
+    a.dataset.fade = '';
+    if (hint) a.title = hint;
+    parent.appendChild(a);
+    return a;
+  }
+
   /** 一排互斥按钮。 */
   segmented(parent: HTMLElement, options: readonly string[], index: number, onPick: (i: number) => void): void {
     const wrap = document.createElement('div');

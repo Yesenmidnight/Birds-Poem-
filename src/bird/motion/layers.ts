@@ -57,7 +57,8 @@ export class BreathLayer extends MotionLayer {
   }
 }
 
-const YAW_LIMIT = 100 * DEG;
+// 转头上限 52°：再大头身一体的圆团子会被拉出一圈“帽兜”一样的凹脸圈（山雀真实转头靠的是整条颈椎 + 身体跟随，不是脖子硬拧）
+const YAW_LIMIT = 52 * DEG;
 const PITCH_UP = 35 * DEG;
 const PITCH_DOWN = 30 * DEG;
 
@@ -124,15 +125,14 @@ export class GazeLayer extends MotionLayer {
     this.startTilt(ctx, sign);
   }
 
-  /** 随机注视：多数在当前注视点附近小跳，偶尔大转头，偶尔看镜头。 */
+  /** 随机注视：多数在当前注视点附近小跳，偶尔看镜头；幅度 22°~46°（身体会顺着跟 25%~34%，不需要头硬拧到 90°+）。 */
   private pickRandom(ctx: MotionContext, events: MotionEvents): void {
     let yaw: number;
     let pitch: number;
     if (ctx.rng() < 0.12) {
       ({ yaw, pitch } = this.lookAngles(ctx, ctx.cameraWorld));
     } else {
-      const big = ctx.rng() < lerp(0.2, 0.4, ctx.activity);
-      const mag = (big ? lerp(35, 95, ctx.rng()) : lerp(8, 30, ctx.rng())) * DEG;
+      const mag = lerp(22, 46, ctx.rng()) * DEG;
       const ang = ctx.rng() * TAU;
       yaw = clamp(this.holdYaw + Math.cos(ang) * mag, -YAW_LIMIT, YAW_LIMIT);
       pitch = clamp(this.holdPitch + Math.sin(ang) * mag * 0.45, -PITCH_UP, PITCH_DOWN);
@@ -385,7 +385,7 @@ export class SpreadLayer extends MotionLayer {
 }
 
 /**
- * 扭扭身子（躯干重心联动）：大角度跳视转头时身体顺着转头方向柔和弹簧滞后跟随 15%~22%；
+ * 扭扭身子（躯干重心联动）：大角度跳视转头时身体顺着转头方向柔和弹簧滞后跟随 25%~34%（头颈的相对转角回掉其中近一半）；
  * 甩尾、弹翅时身体前俯微蹲反冲一下再弹簧回稳。躯干绕脚踝抓握点转，双脚始终抓牢树枝。
  */
 export class SwayLayer extends MotionLayer {
@@ -398,11 +398,13 @@ export class SwayLayer extends MotionLayer {
 
   update(dt: number, ctx: MotionContext, pose: Pose, events: MotionEvents): void {
     // 跟随转头：欠阻尼弹簧（周期 0.4 s、阻尼比 0.75）半隐式积分，身体比头慢半拍
-    const target = pose.head.yaw * lerp(0.15, 0.22, ctx.activity);
+    const target = pose.head.yaw * lerp(0.25, 0.34, ctx.activity);
     const w = TAU / 0.4;
     this.yawVel += (-w * w * (this.yaw - target) - 1.5 * w * this.yawVel) * dt;
     this.yaw += this.yawVel * dt;
     pose.body.yaw += this.yaw;
+    // 身体已经跟着转过去一部分，颈部的相对转角回掉这部分的一半：头身一体的圆团子大转头时才不会被拧出帽兜状的凹脸圈
+    pose.head.yaw -= this.yaw * 0.45;
 
     // 甩尾 / 弹翅的反冲：前俯一下再弹回（弹翅幅度更大一些）
     if (events.tailFlicks !== this.seenTail) {
