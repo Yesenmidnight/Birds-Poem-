@@ -4,6 +4,7 @@
   "version": "0.0.0",
   "type": "module",
   "description": "程序化生成的近距离观鸟 H5：第一只鸟是北长尾山雀",
+  "license": "MIT",
   "scripts": {
     "dev": "vite",
     "build": "vite build",
